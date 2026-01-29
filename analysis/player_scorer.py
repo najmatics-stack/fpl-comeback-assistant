@@ -80,19 +80,20 @@ class PlayerScorer:
 
     def _calculate_form_score(self, player: Player) -> float:
         """Calculate form score (0-10)"""
-        # Form is typically 0-10 in FPL
         return min(10, player.form)
 
     def _calculate_xgi_score(self, player: Player) -> float:
-        """Calculate xGI per 90 score (0-10)"""
+        """Calculate xGI per 90 score (0-10), position-aware"""
         if player.minutes < 90:
             return 0
 
         xgi_per_90 = (player.expected_goal_involvements / player.minutes) * 90
 
-        # Normalize: 0.8+ xGI/90 = 10, scale down from there
-        # Top attackers average ~0.6-0.8 xGI/90
-        return min(10, xgi_per_90 * 12.5)
+        # Position-adjusted thresholds: defenders get credit for lower xGI
+        multipliers = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}
+        mult = multipliers.get(player.position, 12.5)
+
+        return min(10, xgi_per_90 * mult)
 
     def _calculate_fixture_score(self, player: Player) -> float:
         """Calculate fixture ease score (0-10)"""
@@ -104,31 +105,56 @@ class PlayerScorer:
             return 0
 
         points_per_million = player.total_points / player.price
-
-        # Good value is ~15+ points per million, scale to 0-10
         return min(10, points_per_million / 1.5)
 
     def _calculate_ict_score(self, player: Player) -> float:
         """Calculate ICT index score (0-10)"""
-        # ICT index typically ranges 0-500+ for top players
-        # Normalize to 0-10
         return min(10, player.ict_index / 50)
 
     def _calculate_minutes_score(self, player: Player) -> float:
-        """Calculate minutes security score (0-10)"""
+        """Calculate minutes security (0-10) using starts ratio"""
         current_gw = self.fpl.get_current_gameweek()
         if current_gw == 0:
-            return 5  # Unknown
+            return 5
 
-        # Calculate average minutes per game
-        games_played = current_gw  # Approximate
-        avg_minutes = player.minutes / games_played if games_played > 0 else 0
+        avg_minutes = player.minutes / current_gw if current_gw > 0 else 0
+        base = min(10, avg_minutes / 9)
 
-        # 90 minutes = 10, scale down
-        return min(10, avg_minutes / 9)
+        # Bonus for high starts ratio (nailed on)
+        if current_gw > 3 and player.starts > 0:
+            starts_ratio = player.starts / current_gw
+            if starts_ratio >= 0.9:
+                base = min(10, base + 1.0)  # Nailed bonus
+            elif starts_ratio < 0.5:
+                base *= 0.7  # Rotation risk
+
+        return base
+
+    def _calculate_set_piece_bonus(self, player: Player) -> float:
+        """Bonus for set piece takers (0-2). Pens/FKs = extra goal routes."""
+        bonus = 0.0
+        if player.penalties_order is not None and player.penalties_order <= 1:
+            bonus += 1.5  # Penalty taker is huge
+        elif player.penalties_order is not None and player.penalties_order <= 2:
+            bonus += 0.5  # Backup pen taker
+        if player.direct_freekicks_order is not None and player.direct_freekicks_order <= 1:
+            bonus += 0.3
+        if player.corners_and_indirect_freekicks_order is not None and player.corners_and_indirect_freekicks_order <= 1:
+            bonus += 0.2  # Corners = assist potential
+        return bonus
+
+    def _calculate_bonus_magnet_score(self, player: Player) -> float:
+        """Score for BPS/bonus consistency (0-1). Bonus pts are free points."""
+        current_gw = self.fpl.get_current_gameweek()
+        if current_gw == 0 or player.minutes < 180:
+            return 0
+
+        bonus_per_game = player.bonus / current_gw
+        # Top bonus magnets average ~0.8-1.5 bonus/game
+        return min(1.0, bonus_per_game / 1.5)
 
     def score_player(self, player: Player) -> ScoredPlayer:
-        """Calculate all scores for a player"""
+        """Calculate all scores for a player with expert-level analysis"""
         form_score = self._calculate_form_score(player)
         xgi_score = self._calculate_xgi_score(player)
         fixture_score = self._calculate_fixture_score(player)
@@ -145,6 +171,10 @@ class PlayerScorer:
             + ict_score * self.weights["ict_index"]
             + minutes_score * self.weights["minutes_security"]
         )
+
+        # Expert bonuses (additive, not weighted)
+        overall_score += self._calculate_set_piece_bonus(player)
+        overall_score += self._calculate_bonus_magnet_score(player)
 
         availability, injury_details = self._get_player_availability(player)
 

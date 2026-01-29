@@ -39,6 +39,11 @@ class Player:
     threat: float
     ict_index: float
     starts: int
+    bonus: int
+    bps: int  # Bonus points system score
+    penalties_order: Optional[int]  # None = not on pens, 1 = first choice
+    corners_and_indirect_freekicks_order: Optional[int]
+    direct_freekicks_order: Optional[int]
     chance_of_playing: Optional[int]
     news: str
     status: str  # 'a' = available, 'd' = doubtful, 'i' = injured, 's' = suspended, 'u' = unavailable
@@ -213,6 +218,11 @@ class FPLDataFetcher:
                 threat=float(p["threat"]),
                 ict_index=float(p["ict_index"]),
                 starts=p["starts"],
+                bonus=p["bonus"],
+                bps=p["bps"],
+                penalties_order=p.get("penalties_order"),
+                corners_and_indirect_freekicks_order=p.get("corners_and_indirect_freekicks_order"),
+                direct_freekicks_order=p.get("direct_freekicks_order"),
                 chance_of_playing=p["chance_of_playing_next_round"],
                 news=p["news"],
                 status=p["status"],

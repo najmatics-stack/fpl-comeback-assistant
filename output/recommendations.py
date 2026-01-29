@@ -123,6 +123,72 @@ class RecommendationEngine:
 
         return alerts[:15]  # Limit to top 15
 
+    def _get_squad_team_counts(self, squad_ids: List[int]) -> Dict[int, int]:
+        """Count players per team in current squad"""
+        counts: Dict[int, int] = {}
+        for pid in squad_ids:
+            player = self.fpl.get_player(pid)
+            if player:
+                counts[player.team_id] = counts.get(player.team_id, 0) + 1
+        return counts
+
+    def _get_squad_position_counts(self, squad_ids: List[int]) -> Dict[str, int]:
+        """Count players per position in current squad"""
+        counts: Dict[str, int] = {}
+        for pid in squad_ids:
+            player = self.fpl.get_player(pid)
+            if player:
+                counts[player.position] = counts.get(player.position, 0) + 1
+        return counts
+
+    def _would_violate_rules(
+        self,
+        player_in_id: int,
+        player_out_id: int,
+        squad_ids: List[int],
+        pending_transfers: List[TransferRecommendation],
+    ) -> bool:
+        """Check if a transfer would violate FPL rules"""
+        player_in = self.fpl.get_player(player_in_id)
+        player_out = self.fpl.get_player(player_out_id)
+        if not player_in or not player_out:
+            return True
+
+        # Build effective squad state after pending transfers
+        effective_ids = set(squad_ids)
+        for tr in pending_transfers:
+            effective_ids.discard(tr.player_out.player.id)
+            effective_ids.add(tr.player_in.player.id)
+        effective_ids.discard(player_out_id)
+        effective_ids.add(player_in_id)
+
+        # Rule 1: Max 3 players per team
+        team_counts: Dict[int, int] = {}
+        for pid in effective_ids:
+            p = self.fpl.get_player(pid)
+            if p:
+                team_counts[p.team_id] = team_counts.get(p.team_id, 0) + 1
+
+        if team_counts.get(player_in.team_id, 0) > 3:
+            return True
+
+        # Rule 2: Position limits (2 GKP, 5 DEF, 5 MID, 3 FWD)
+        pos_limits = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
+        pos_counts: Dict[str, int] = {}
+        for pid in effective_ids:
+            p = self.fpl.get_player(pid)
+            if p:
+                pos_counts[p.position] = pos_counts.get(p.position, 0) + 1
+
+        if pos_counts.get(player_in.position, 0) > pos_limits.get(player_in.position, 5):
+            return True
+
+        # Rule 3: Squad size must stay at 15
+        if len(effective_ids) != 15:
+            return True
+
+        return False
+
     def get_transfer_recommendations(
         self,
         current_squad_ids: List[int],
@@ -130,8 +196,8 @@ class RecommendationEngine:
         free_transfers: int = 1,
         limit: int = 5,
     ) -> List[TransferRecommendation]:
-        """Generate transfer recommendations"""
-        recommendations = []
+        """Generate transfer recommendations respecting all FPL rules"""
+        recommendations: List[TransferRecommendation] = []
 
         # Score current squad
         current_squad = []
@@ -140,30 +206,58 @@ class RecommendationEngine:
             if player:
                 current_squad.append(self.scorer.score_player(player))
 
-        # Find weakest players in squad
+        # Sort weakest first
         current_squad.sort(key=lambda x: x.overall_score)
-        weak_players = current_squad[: free_transfers + 3]  # Consider a few more
 
-        # Get top replacements by position
-        for weak in weak_players:
+        # Consider more weak players but only recommend up to limit
+        candidates = current_squad[: limit + 3]
+        remaining_budget = budget
+
+        for weak in candidates:
+            if len(recommendations) >= limit:
+                break
+
             position = weak.player.position
-            max_price = weak.player.price + budget
+            max_price = weak.player.price + remaining_budget
 
             # Get top players in that position
             top_players = self.scorer.get_top_players(
-                position=position, max_price=max_price, limit=20
+                position=position, max_price=max_price, limit=30
             )
 
-            # Find best upgrade not already in squad
             for top in top_players:
+                # Skip players already in squad
                 if top.player.id in current_squad_ids:
                     continue
 
-                score_gain = top.overall_score - weak.overall_score
-                if score_gain <= 0.5:  # Not worth it
+                # Skip if already recommended as an incoming player
+                if any(r.player_in.player.id == top.player.id for r in recommendations):
                     continue
 
+                # Skip if outgoing player already used
+                if any(r.player_out.player.id == weak.player.id for r in recommendations):
+                    break
+
+                # Enforce FPL rules
+                if self._would_violate_rules(
+                    top.player.id, weak.player.id, current_squad_ids, recommendations
+                ):
+                    continue
+
+                # Check budget
                 price_diff = top.player.price - weak.player.price
+                if price_diff > remaining_budget:
+                    continue
+
+                score_gain = top.overall_score - weak.overall_score
+
+                # For hits (-4), require higher threshold
+                transfer_number = len(recommendations) + 1
+                is_hit = transfer_number > free_transfers
+                min_gain = 1.5 if is_hit else 0.5
+
+                if score_gain <= min_gain:
+                    continue
 
                 # Generate reason
                 reasons = []
@@ -173,6 +267,10 @@ class RecommendationEngine:
                     reasons.append("better form")
                 if top.xgi_score > weak.xgi_score + 1:
                     reasons.append("higher xGI")
+                if weak.availability in ("injured", "suspended"):
+                    reasons.append(f"{weak.player.web_name} {weak.availability}")
+                if is_hit:
+                    reasons.append(f"-4 hit (worth +{score_gain:.1f} gain)")
 
                 reason = ", ".join(reasons) if reasons else "overall upgrade"
 
@@ -185,9 +283,9 @@ class RecommendationEngine:
                         reason=reason,
                     )
                 )
-                break  # One recommendation per weak player
+                remaining_budget -= price_diff
+                break
 
-        # Sort by score gain
         recommendations.sort(key=lambda x: x.score_gain, reverse=True)
         return recommendations[:limit]
 
