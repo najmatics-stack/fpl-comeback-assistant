@@ -18,6 +18,7 @@ from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.player_scorer import PlayerScorer
 from analysis.differential import DifferentialFinder
 from analysis.chip_optimizer import ChipOptimizer
+from analysis.backtester import Backtester
 from output.recommendations import RecommendationEngine
 
 
@@ -103,6 +104,14 @@ def parse_args():
         "-a",
         action="store_true",
         help="Auto-pilot: execute transfers, set captain, activate chips",
+    )
+
+    parser.add_argument(
+        "--backtest",
+        "-b",
+        type=str,
+        metavar="GW_RANGE",
+        help="Blind backtest: single GW (e.g. '20') or range (e.g. '18-22')",
     )
 
     return parser.parse_args()
@@ -197,6 +206,17 @@ async def main_async(args):
     available_chips = get_available_chips(args.chips)
 
     # Generate and display recommendations
+    if args.backtest:
+        # Parse GW range
+        bt = args.backtest
+        backtester = Backtester(fpl)
+        if "-" in bt:
+            start, end = bt.split("-")
+            await backtester.run_multi_gw_backtest(int(start), int(end))
+        else:
+            await backtester.run_backtest(int(bt))
+        return
+
     if args.quiet:
         # Minimal output - just key recommendations
         print("\n" + "=" * 40)
