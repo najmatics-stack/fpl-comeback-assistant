@@ -12,6 +12,7 @@ from typing import List, Optional
 
 import config
 from data.fpl_api import FPLDataFetcher
+from data.fpl_actions import FPLActions, prompt_credentials
 from data.news_scraper import NewsScraper
 from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.player_scorer import PlayerScorer
@@ -95,6 +96,13 @@ def parse_args():
         "-m",
         action="store_true",
         help="Show your current squad with ratings",
+    )
+
+    parser.add_argument(
+        "--auto",
+        "-a",
+        action="store_true",
+        help="Auto-pilot: execute transfers, set captain, activate chips",
     )
 
     return parser.parse_args()
@@ -357,6 +365,94 @@ async def main_async(args):
                 weakest = min(all_starters, key=lambda x: x["scored"].overall_score)
                 print(f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})")
                 print(f"   Consider replacing in upcoming transfers")
+
+    elif args.auto:
+        # Auto-pilot mode
+        if not args.team_id:
+            print("❌ --team-id required for auto mode")
+            return
+
+        if not squad_ids:
+            print("❌ Could not fetch squad")
+            return
+
+        # Generate recommendations first
+        rec = recommender.get_full_recommendations(squad_ids, available_chips)
+        print(recommender.format_full_recommendations(rec))
+
+        # Confirm before executing
+        print("\n" + "=" * 60)
+        print("  AUTO-PILOT MODE")
+        print("=" * 60)
+
+        # Summarize planned actions
+        actions = []
+        if rec.transfers:
+            for tr in rec.transfers[:2]:  # Max 2 transfers
+                actions.append(
+                    f"Transfer: {tr.player_out.player.web_name} → {tr.player_in.player.web_name}"
+                )
+
+        if rec.captain_picks:
+            cp = rec.captain_picks[0]
+            actions.append(f"Captain: {cp.player.player.web_name}")
+            if len(rec.captain_picks) > 1:
+                vc = rec.captain_picks[1]
+                actions.append(f"Vice Captain: {vc.player.player.web_name}")
+
+        chip_to_play = None
+        for chip_rec in rec.chip_strategy.recommendations:
+            if chip_rec.priority == 1 and chip_rec.recommended_gw == current_gw + 1:
+                chip_to_play = chip_rec
+                actions.append(f"Activate: {chip_rec.chip.value.replace('_', ' ').title()}")
+
+        if not actions:
+            print("\nNo actions to execute this week.")
+            return
+
+        print("\nPlanned actions:")
+        for i, action in enumerate(actions, 1):
+            print(f"  {i}. {action}")
+
+        confirm = input("\nExecute these actions? (yes/no): ").strip().lower()
+        if confirm not in ("yes", "y"):
+            print("Cancelled.")
+            return
+
+        # Login
+        email, password = prompt_credentials()
+        fpl_actions = FPLActions(args.team_id)
+
+        try:
+            if not await fpl_actions.login(email, password):
+                print("❌ Cannot proceed without login")
+                return
+
+            # Execute transfers
+            if rec.transfers:
+                transfers = rec.transfers[:2]
+                outs = [tr.player_out.player.id for tr in transfers]
+                ins = [tr.player_in.player.id for tr in transfers]
+
+                use_wc = chip_to_play and chip_to_play.chip.value == "wildcard"
+                use_fh = chip_to_play and chip_to_play.chip.value == "free_hit"
+
+                await fpl_actions.make_transfers(outs, ins, wildcard=use_wc, free_hit=use_fh)
+
+            # Set captain
+            if rec.captain_picks:
+                captain_id = rec.captain_picks[0].player.player.id
+                vc_id = rec.captain_picks[1].player.player.id if len(rec.captain_picks) > 1 else captain_id
+                await fpl_actions.set_captain(captain_id, vc_id, current_gw)
+
+            # Activate chip (if not already used via transfer)
+            if chip_to_play and chip_to_play.chip.value in ("triple_captain", "bench_boost"):
+                await fpl_actions.activate_chip(chip_to_play.chip.value, current_gw + 1)
+
+            print("\n✓ All actions executed successfully!")
+
+        finally:
+            await fpl_actions.close()
 
     else:
         # Full recommendations
