@@ -90,11 +90,18 @@ def parse_args():
         help="Minimal output",
     )
 
+    parser.add_argument(
+        "--my-team",
+        "-m",
+        action="store_true",
+        help="Show your current squad with ratings",
+    )
+
     return parser.parse_args()
 
 
-async def fetch_team_squad(fpl: FPLDataFetcher, team_id: int) -> Optional[List[int]]:
-    """Fetch current squad for a team"""
+async def fetch_team_squad(fpl: FPLDataFetcher, team_id: int) -> Optional[List[dict]]:
+    """Fetch current squad for a team with full pick data"""
     try:
         current_gw = fpl.get_current_gameweek()
         picks_data = await fpl.fetch_team_picks(team_id, current_gw)
@@ -104,12 +111,21 @@ async def fetch_team_squad(fpl: FPLDataFetcher, team_id: int) -> Optional[List[i
             picks_data = await fpl.fetch_team_picks(team_id, current_gw - 1)
 
         if picks_data and "picks" in picks_data:
-            return [p["element"] for p in picks_data["picks"]]
+            return picks_data["picks"]
 
     except Exception as e:
         print(f"Could not fetch team data: {e}")
 
     return None
+
+
+async def fetch_team_info(fpl: FPLDataFetcher, team_id: int) -> Optional[dict]:
+    """Fetch team manager info (name, rank, points, etc.)"""
+    try:
+        return await fpl.fetch_team_data(team_id)
+    except Exception as e:
+        print(f"Could not fetch team info: {e}")
+        return None
 
 
 def get_available_chips(chips_arg: List[str]) -> List[str]:
@@ -153,11 +169,19 @@ async def main_async(args):
 
     # Fetch team if provided
     squad_ids = None
+    squad_picks = None
+    team_info = None
     if args.team_id:
         print(f"🔄 Fetching team {args.team_id}...")
-        squad_ids = await fetch_team_squad(fpl, args.team_id)
-        if squad_ids:
+        squad_picks = await fetch_team_squad(fpl, args.team_id)
+        team_info = await fetch_team_info(fpl, args.team_id)
+        if squad_picks:
+            squad_ids = [p["element"] for p in squad_picks]
             print(f"✓ Found {len(squad_ids)} players in squad")
+            if team_info:
+                name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
+                team_name = team_info.get('name', 'Unknown')
+                print(f"✓ Manager: {name} | Team: {team_name}")
         else:
             print("⚠️  Could not fetch team - using general recommendations")
 
@@ -231,6 +255,108 @@ async def main_async(args):
         # Detailed chip strategy
         strategy = chip_optimizer.get_chip_strategy(available_chips)
         print("\n" + strategy.summary)
+
+    elif args.my_team:
+        # Show current squad with ratings
+        if not squad_picks:
+            print("\n❌ No team data available. Please provide --team-id")
+        else:
+            print("\n" + "=" * 60)
+            print("  YOUR SQUAD ANALYSIS")
+            print("=" * 60)
+
+            # Team info header
+            if team_info:
+                name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
+                team_name = team_info.get('name', 'Unknown')
+                overall_rank = team_info.get('summary_overall_rank', 'N/A')
+                overall_points = team_info.get('summary_overall_points', 0)
+                gw_points = team_info.get('summary_event_points', 0)
+
+                # Format rank with commas
+                if isinstance(overall_rank, int):
+                    rank_str = f"{overall_rank:,}"
+                else:
+                    rank_str = str(overall_rank)
+
+                print(f"\n👤 {name}")
+                print(f"🏆 {team_name}")
+                print(f"📊 Overall Rank: {rank_str} | Total Points: {overall_points} | GW{current_gw}: {gw_points} pts")
+
+            # Group players by position
+            positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
+
+            for pick in squad_picks:
+                player = fpl.get_player(pick["element"])
+                if player:
+                    sp = scorer.score_player(player)
+                    positions[player.position].append({
+                        "player": player,
+                        "scored": sp,
+                        "is_captain": pick.get("is_captain", False),
+                        "is_vice": pick.get("is_vice_captain", False),
+                        "multiplier": pick.get("multiplier", 1),
+                        "position": pick.get("position", 0),
+                    })
+
+            # Sort starting XI (positions 1-11) vs bench (12-15)
+            print("\n" + "-" * 60)
+            print("STARTING XI")
+            print("-" * 60)
+
+            total_score = 0
+            for pos in ["GKP", "DEF", "MID", "FWD"]:
+                starters = [p for p in positions[pos] if p["position"] <= 11]
+                if starters:
+                    print(f"\n{pos}:")
+                    for p in sorted(starters, key=lambda x: x["scored"].overall_score, reverse=True):
+                        player = p["player"]
+                        sp = p["scored"]
+                        total_score += sp.overall_score
+
+                        # Captain/vice badges
+                        badge = ""
+                        if p["is_captain"]:
+                            badge = " 👑(C)"
+                        elif p["is_vice"]:
+                            badge = " (VC)"
+
+                        # Availability icon
+                        avail_icon = {"fit": "✓", "doubt": "⚠️", "injured": "❌", "suspended": "🚫"}.get(sp.availability, "")
+
+                        # Fixture info
+                        fixture_run = fixtures.get_fixture_run(player.team_id)
+                        next_fix = fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+
+                        print(f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
+                              f"Form: {player.form} | Score: {sp.overall_score:.1f} | Next: {next_fix}{badge}")
+
+            print("\n" + "-" * 60)
+            print("BENCH")
+            print("-" * 60)
+
+            for pos in ["GKP", "DEF", "MID", "FWD"]:
+                bench = [p for p in positions[pos] if p["position"] > 11]
+                for p in bench:
+                    player = p["player"]
+                    sp = p["scored"]
+                    avail_icon = {"fit": "✓", "doubt": "⚠️", "injured": "❌", "suspended": "🚫"}.get(sp.availability, "")
+                    print(f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
+                          f"Form: {player.form} | Score: {sp.overall_score:.1f}")
+
+            print("\n" + "-" * 60)
+            print(f"SQUAD STRENGTH: {total_score:.1f} (Starting XI total score)")
+            print("-" * 60)
+
+            # Weakest link
+            all_starters = []
+            for pos in positions.values():
+                all_starters.extend([p for p in pos if p["position"] <= 11])
+
+            if all_starters:
+                weakest = min(all_starters, key=lambda x: x["scored"].overall_score)
+                print(f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})")
+                print(f"   Consider replacing in upcoming transfers")
 
     else:
         # Full recommendations

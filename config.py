@@ -3,7 +3,7 @@ FPL Comeback Assistant Configuration
 """
 
 # Your FPL Team ID (find it in your team URL: https://fantasy.premierleague.com/entry/YOUR_ID/event/1)
-TEAM_ID = None  # Set your team ID here, e.g., 12345678
+TEAM_ID = 7907269  # Najm's team
 
 # Current gameweek (will be auto-detected if None)
 CURRENT_GW = None
