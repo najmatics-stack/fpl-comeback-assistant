@@ -96,8 +96,8 @@ class PlayerScorer:
         return min(10, xgi_per_90 * mult)
 
     def _calculate_fixture_score(self, player: Player) -> float:
-        """Calculate fixture ease score (0-10)"""
-        return self.fixtures.get_fixture_ease_score(player.team_id)
+        """Calculate fixture ease score (0-10), position-aware with home/away split"""
+        return self.fixtures.get_fixture_ease_score(player.team_id, player.position)
 
     def _calculate_value_score(self, player: Player) -> float:
         """Calculate value score (points per million) (0-10)"""
