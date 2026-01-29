@@ -19,6 +19,8 @@ from analysis.player_scorer import PlayerScorer
 from analysis.differential import DifferentialFinder
 from analysis.chip_optimizer import ChipOptimizer
 from analysis.backtester import Backtester
+from analysis.evaluator import ModelEvaluator
+from analysis.comparative_backtest import ComparativeBacktester
 from output.recommendations import RecommendationEngine
 
 
@@ -114,6 +116,21 @@ def parse_args():
         help="Blind backtest: single GW (e.g. '20') or range (e.g. '18-22')",
     )
 
+    parser.add_argument(
+        "--evaluate",
+        "-e",
+        type=int,
+        metavar="GW",
+        help="Evaluate model on completed GW and auto-tune weights",
+    )
+
+    parser.add_argument(
+        "--compare",
+        type=str,
+        metavar="GW_LIST",
+        help="Compare our model vs baselines (e.g. '18,19,20,21,22')",
+    )
+
     return parser.parse_args()
 
 
@@ -206,6 +223,19 @@ async def main_async(args):
     available_chips = get_available_chips(args.chips)
 
     # Generate and display recommendations
+    if args.evaluate:
+        evaluator = ModelEvaluator(fpl)
+        result = await evaluator.evaluate_and_save(args.evaluate)
+        print(evaluator.format_result(result))
+        return
+
+    if args.compare:
+        gws = [int(g.strip()) for g in args.compare.split(",")]
+        comp = ComparativeBacktester(fpl)
+        result = await comp.run_comparison(gws)
+        print(comp.format_comparison(result))
+        return
+
     if args.backtest:
         # Parse GW range
         bt = args.backtest
