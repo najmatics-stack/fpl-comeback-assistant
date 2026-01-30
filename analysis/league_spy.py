@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import aiohttp
 
+from data.cache import Cache
 from data.fpl_api import FPLDataFetcher, Player
 
 
@@ -49,31 +50,50 @@ class LeagueSpy:
     """Fetches and analyzes mini-league rival data"""
 
     BASE_URL = "https://fantasy.premierleague.com/api"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    }
+    MAX_RETRIES = 3
 
     def __init__(self, fpl_data: FPLDataFetcher, your_team_id: int):
         self.fpl = fpl_data
         self.your_team_id = your_team_id
+        self.cache = Cache()
+
+    async def _fetch_json(self, session: aiohttp.ClientSession, url: str,
+                          cache_key: Optional[str] = None) -> Dict:
+        """Fetch JSON with caching and exponential backoff for 429/403"""
+        if cache_key:
+            cached = self.cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        for attempt in range(self.MAX_RETRIES):
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if cache_key:
+                        self.cache.set(cache_key, data)
+                    return data
+                if resp.status in (429, 403):
+                    wait = 2 ** (attempt + 1)
+                    print(f"   Rate limited ({resp.status}), retrying in {wait}s...")
+                    await asyncio.sleep(wait)
+                    continue
+                return {}
+        return {}
 
     async def _fetch_league_standings(self, session: aiohttp.ClientSession, league_id: int) -> Dict:
         url = f"{self.BASE_URL}/leagues-classic/{league_id}/standings/"
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return {}
-            return await resp.json()
+        return await self._fetch_json(session, url, cache_key=f"league_{league_id}")
 
     async def _fetch_picks(self, session: aiohttp.ClientSession, team_id: int, gw: int) -> Dict:
         url = f"{self.BASE_URL}/entry/{team_id}/event/{gw}/picks/"
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return {}
-            return await resp.json()
+        return await self._fetch_json(session, url, cache_key=f"spy_picks_{team_id}_{gw}")
 
     async def _fetch_entry(self, session: aiohttp.ClientSession, team_id: int) -> Dict:
         url = f"{self.BASE_URL}/entry/{team_id}/"
-        async with session.get(url) as resp:
-            if resp.status != 200:
-                return {}
-            return await resp.json()
+        return await self._fetch_json(session, url, cache_key=f"spy_entry_{team_id}")
 
     async def _find_league_id(self, session: aiohttp.ClientSession) -> Optional[int]:
         """Find the user's classic mini-league (smallest private league)"""
@@ -104,7 +124,7 @@ class LeagueSpy:
         """Analyze a mini-league and build intelligence"""
         current_gw = self.fpl.get_current_gameweek()
 
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers=self.HEADERS) as session:
             # Auto-detect league if not provided
             if league_id is None:
                 league_id = await self._find_league_id(session)
@@ -158,7 +178,7 @@ class LeagueSpy:
                     for p in picks_data["picks"]:
                         if p.get("is_captain"):
                             rival.captain_id = p["element"]
-                await asyncio.sleep(0.3)  # Rate limit
+                await asyncio.sleep(1.0)  # Rate limit
 
         # Analyze ownership within league
         num_rivals = len(rivals)
