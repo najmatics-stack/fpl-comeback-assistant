@@ -21,6 +21,7 @@ from analysis.chip_optimizer import ChipOptimizer
 from analysis.backtester import Backtester
 from analysis.evaluator import ModelEvaluator
 from analysis.comparative_backtest import ComparativeBacktester
+from analysis.league_spy import LeagueSpy
 from output.recommendations import RecommendationEngine
 
 
@@ -129,6 +130,20 @@ def parse_args():
         type=str,
         metavar="GW_LIST",
         help="Compare our model vs baselines (e.g. '18,19,20,21,22')",
+    )
+
+    parser.add_argument(
+        "--league-spy",
+        "-l",
+        action="store_true",
+        help="Analyze rival squads in your mini-league",
+    )
+
+    parser.add_argument(
+        "--league-id",
+        type=int,
+        help="Mini-league ID (auto-detected if not provided)",
+        default=None,
     )
 
     return parser.parse_args()
@@ -245,6 +260,20 @@ async def main_async(args):
             await backtester.run_multi_gw_backtest(int(start), int(end))
         else:
             await backtester.run_backtest(int(bt))
+        return
+
+    if args.league_spy:
+        if not args.team_id:
+            print("❌ --team-id required for league spy")
+            return
+
+        print("🔄 Scanning rival squads...")
+        spy = LeagueSpy(fpl, args.team_id)
+        intel = await spy.analyze_league(league_id=args.league_id)
+        if intel:
+            print(spy.format_intel(intel))
+        else:
+            print("❌ Could not gather league intelligence")
         return
 
     if args.quiet:
