@@ -13,6 +13,7 @@ from analysis.player_scorer import PlayerScorer, ScoredPlayer
 from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.differential import DifferentialFinder, Differential
 from analysis.chip_optimizer import ChipOptimizer, ChipStrategy
+from analysis.league_spy import LeagueIntel
 
 import config
 
@@ -51,6 +52,18 @@ class FullRecommendation:
     fixture_summary: str
 
 
+@dataclass
+class TransferPlan:
+    """A transfer plan option for interactive auto mode"""
+
+    label: str  # "conservative", "balanced", "aggressive"
+    display_label: str  # "A: CONSERVATIVE", etc.
+    transfers: List[TransferRecommendation]
+    total_score_gain: float
+    hit_cost: int  # 0, -4, -8
+    is_recommended: bool
+
+
 class RecommendationEngine:
     """Generates comprehensive FPL recommendations"""
 
@@ -62,6 +75,7 @@ class RecommendationEngine:
         differential_finder: DifferentialFinder,
         chip_optimizer: ChipOptimizer,
         news_scraper: Optional[NewsScraper] = None,
+        league_intel: Optional[LeagueIntel] = None,
     ):
         self.fpl = fpl_data
         self.scorer = player_scorer
@@ -69,6 +83,7 @@ class RecommendationEngine:
         self.differentials = differential_finder
         self.chips = chip_optimizer
         self.news = news_scraper
+        self.league_intel = league_intel
 
     def get_injury_alerts(
         self, squad_player_ids: Optional[List[int]] = None
@@ -162,15 +177,16 @@ class RecommendationEngine:
         effective_ids.discard(player_out_id)
         effective_ids.add(player_in_id)
 
-        # Rule 1: Max 3 players per team
+        # Rule 1: Max 3 players per team (check ALL teams, not just incoming)
         team_counts: Dict[int, int] = {}
         for pid in effective_ids:
             p = self.fpl.get_player(pid)
             if p:
                 team_counts[p.team_id] = team_counts.get(p.team_id, 0) + 1
 
-        if team_counts.get(player_in.team_id, 0) > 3:
-            return True
+        for tid, count in team_counts.items():
+            if count > 3:
+                return True
 
         # Rule 2: Position limits (2 GKP, 5 DEF, 5 MID, 3 FWD)
         pos_limits = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
@@ -189,12 +205,23 @@ class RecommendationEngine:
 
         return False
 
+    def _get_over_limit_teams(self, squad_ids: List[int]) -> Dict[int, int]:
+        """Find teams with more than 3 players in the squad"""
+        team_counts: Dict[int, int] = {}
+        for pid in squad_ids:
+            p = self.fpl.get_player(pid)
+            if p:
+                team_counts[p.team_id] = team_counts.get(p.team_id, 0) + 1
+        return {tid: count for tid, count in team_counts.items() if count > 3}
+
     def get_transfer_recommendations(
         self,
         current_squad_ids: List[int],
         budget: float = 0.0,
         free_transfers: int = 1,
         limit: int = 5,
+        min_gain_free: float = 0.5,
+        min_gain_hit: float = 1.5,
     ) -> List[TransferRecommendation]:
         """Generate transfer recommendations respecting all FPL rules"""
         recommendations: List[TransferRecommendation] = []
@@ -209,8 +236,23 @@ class RecommendationEngine:
         # Sort weakest first
         current_squad.sort(key=lambda x: x.overall_score)
 
-        # Consider more weak players but only recommend up to limit
-        candidates = current_squad[: limit + 3]
+        # Force transfers from over-limit teams (e.g., 4 players from one team
+        # due to mid-season transfers). FPL API rejects ALL transfers until
+        # the squad is brought back to 3-per-team.
+        over_limit = self._get_over_limit_teams(current_squad_ids)
+        forced_out = []
+        if over_limit:
+            for tid, count in over_limit.items():
+                excess = count - 3
+                # Pick the weakest players from the over-limit team
+                team_players = [sp for sp in current_squad if sp.player.team_id == tid]
+                team_players.sort(key=lambda x: x.overall_score)
+                forced_out.extend(team_players[:excess])
+
+        # Build candidate list: forced transfers first, then weakest players
+        forced_ids = {sp.player.id for sp in forced_out}
+        remaining = [sp for sp in current_squad if sp.player.id not in forced_ids]
+        candidates = forced_out + remaining[: limit + 3 - len(forced_out)]
         remaining_budget = budget
 
         for weak in candidates:
@@ -251,10 +293,19 @@ class RecommendationEngine:
 
                 score_gain = top.overall_score - weak.overall_score
 
+                # League spy adjustments
+                if self.league_intel:
+                    in_ownership = self.league_intel.league_ownership.get(top.player.id, 0)
+                    if in_ownership < 20 and top.player.form >= 4.0:
+                        score_gain *= 1.15  # League differential bonus
+                    out_ownership = self.league_intel.league_ownership.get(weak.player.id, 0)
+                    if out_ownership >= 70:
+                        score_gain *= 0.85  # Penalty for selling must-haves
+
                 # For hits (-4), require higher threshold
                 transfer_number = len(recommendations) + 1
                 is_hit = transfer_number > free_transfers
-                min_gain = 1.5 if is_hit else 0.5
+                min_gain = min_gain_hit if is_hit else min_gain_free
 
                 if score_gain <= min_gain:
                     continue
@@ -271,6 +322,13 @@ class RecommendationEngine:
                     reasons.append(f"{weak.player.web_name} {weak.availability}")
                 if is_hit:
                     reasons.append(f"-4 hit (worth +{score_gain:.1f} gain)")
+                if self.league_intel:
+                    in_ownership = self.league_intel.league_ownership.get(top.player.id, 0)
+                    out_ownership = self.league_intel.league_ownership.get(weak.player.id, 0)
+                    if in_ownership < 20 and top.player.form >= 4.0:
+                        reasons.append(f"league differential ({in_ownership:.0f}% rivals)")
+                    if out_ownership >= 70:
+                        reasons.append(f"rival template ({out_ownership:.0f}% own)")
 
                 reason = ", ".join(reasons) if reasons else "overall upgrade"
 
@@ -345,65 +403,106 @@ class RecommendationEngine:
     def get_captain_picks(
         self, squad_ids: Optional[List[int]] = None, limit: int = 3
     ) -> List[CaptainPick]:
-        """Get captain recommendations"""
+        """Get captain recommendations using ep_next anchor + ceiling analysis"""
         if squad_ids:
-            # Captain from squad
             players = [self.fpl.get_player(pid) for pid in squad_ids]
             players = [p for p in players if p]
         else:
-            # Get top overall players
             top = self.scorer.get_top_players(limit=20)
             players = [sp.player for sp in top]
 
+        current_gw = self.fpl.get_current_gameweek()
         captain_picks = []
 
         for player in players:
             sp = self.scorer.score_player(player)
 
-            # Skip unavailable
             if sp.availability in ("injured", "suspended"):
                 continue
 
-            # Calculate expected points (rough estimate)
-            # Base on form, fixture, and position multipliers
             fixture_run = self.fixtures.get_fixture_run(player.team_id)
 
-            base_exp = player.form * 1.5  # Form-based expectation
+            # ep_next anchor: FPL's own prediction is the strongest single signal
+            if player.ep_next > 0:
+                base_exp = player.ep_next
+            else:
+                base_exp = player.form * 1.5  # Fallback
+
+            # Fixture quality multiplier
             fixture_mult = (5 - fixture_run.avg_difficulty) / 4 + 0.5  # 0.5-1.25x
 
-            # Position bonus (attackers score more when they score)
+            # Position bonus
             pos_mult = {"GKP": 0.7, "DEF": 0.9, "MID": 1.0, "FWD": 1.1}.get(
                 player.position, 1.0
             )
 
-            # DGW bonus
+            # Ceiling analysis: dreamteam frequency indicates explosive potential
+            if current_gw > 0 and player.dreamteam_count > 0:
+                explosive_rate = player.dreamteam_count / current_gw
+                # 0-30% bonus for explosive players
+                ceiling_bonus = 1.0 + min(0.3, explosive_rate * 3.0)
+            else:
+                ceiling_bonus = 1.0
+
+            # Quality-weighted DGW: scale by fixture quality instead of flat 1.8x
             if fixture_run.has_double:
-                base_exp *= 1.8
+                dgw_fixtures = [
+                    diff for gw, _, diff, _ in fixture_run.fixtures
+                    if sum(1 for g, _, _, _ in fixture_run.fixtures if g == gw) > 1
+                    or fixture_run.has_double
+                ]
+                if dgw_fixtures:
+                    avg_dgw_diff = sum(dgw_fixtures) / len(dgw_fixtures)
+                    # Easy double (avg diff ~2) → 1.9x, hard double (avg diff ~4) → 1.5x
+                    dgw_mult = 2.1 - avg_dgw_diff * 0.15
+                    dgw_mult = max(1.5, min(1.9, dgw_mult))
+                else:
+                    dgw_mult = 1.8
+                base_exp *= dgw_mult
 
-            expected_pts = base_exp * fixture_mult * pos_mult
+            expected_pts = base_exp * fixture_mult * pos_mult * ceiling_bonus
 
-            # Doubt penalty
+            # Probability-based doubt penalty using availability multiplier
             if sp.availability == "doubt":
-                expected_pts *= 0.75
+                expected_pts *= sp.availability_multiplier
+
+            # League spy adjustments
+            if self.league_intel:
+                if player.id in self.league_intel.captain_fades:
+                    expected_pts *= 0.85
+                elif player.id in self.league_intel.captain_targets:
+                    expected_pts *= 1.15
 
             # Generate fixture info
             fixtures_str = " + ".join(
                 f"{opp}" for _, opp, diff, _ in fixture_run.fixtures[:2]
             )
 
-            # Generate reason
+            # Generate reason with richer detail
             reasons = []
+            if player.ep_next > 0:
+                reasons.append(f"FPL predicts {player.ep_next:.1f} pts")
             if player.form >= 6:
                 reasons.append("excellent form")
             elif player.form >= 4:
                 reasons.append("good form")
+
+            if current_gw > 0 and player.dreamteam_count >= 3:
+                reasons.append(f"explosive ({player.dreamteam_count} dreamteams)")
 
             if fixture_run.avg_difficulty <= 2.5:
                 reasons.append("easy fixture")
             if fixture_run.has_double:
                 reasons.append("DOUBLE GW")
 
-            if player.selected_by_percent > 30:
+            if self.league_intel:
+                num_rivals = len(self.league_intel.rivals)
+                cap_count = self.league_intel.league_captains.get(player.id, 0)
+                if player.id in self.league_intel.captain_fades:
+                    reasons.append(f"fade: {cap_count}/{num_rivals} rivals captaining")
+                elif player.id in self.league_intel.captain_targets:
+                    reasons.append(f"differential captain ({cap_count}/{num_rivals} rivals)")
+            elif player.selected_by_percent > 30:
                 reasons.append("safe pick")
             elif player.selected_by_percent < 10:
                 reasons.append("differential")
@@ -417,7 +516,6 @@ class RecommendationEngine:
                 )
             )
 
-        # Sort by expected points
         captain_picks.sort(key=lambda x: x.expected_points, reverse=True)
         return captain_picks[:limit]
 
@@ -465,6 +563,349 @@ class RecommendationEngine:
             chip_strategy=chip_strategy,
             fixture_summary=fixture_summary,
         )
+
+    def get_transfer_plans(
+        self,
+        current_squad_ids: List[int],
+        budget: float = 0.0,
+        free_transfers: int = 1,
+        max_hits: int = 1,
+        min_gain_free: float = 0.5,
+        min_gain_hit: float = 1.5,
+        risk_level: str = "balanced",
+    ) -> List[TransferPlan]:
+        """Generate 3 transfer plans: conservative, balanced, aggressive"""
+        # Risk multipliers for thresholds
+        risk_mult = {"conservative": 1.5, "balanced": 1.0, "aggressive": 0.5}.get(
+            risk_level, 1.0
+        )
+
+        plans = []
+
+        # Plan A: Conservative — only free transfers, no hits
+        conservative = self.get_transfer_recommendations(
+            current_squad_ids,
+            budget=budget,
+            free_transfers=free_transfers,
+            limit=free_transfers,
+            min_gain_free=min_gain_free * risk_mult,
+            min_gain_hit=999,  # effectively disallow hits
+        )
+        cons_gain = sum(t.score_gain for t in conservative)
+        plans.append(TransferPlan(
+            label="conservative",
+            display_label="A: CONSERVATIVE",
+            transfers=conservative,
+            total_score_gain=cons_gain,
+            hit_cost=0,
+            is_recommended=False,
+        ))
+
+        # Plan B: Balanced — free + up to max_hits
+        balanced_limit = free_transfers + max_hits
+        balanced = self.get_transfer_recommendations(
+            current_squad_ids,
+            budget=budget,
+            free_transfers=free_transfers,
+            limit=balanced_limit,
+            min_gain_free=min_gain_free * risk_mult,
+            min_gain_hit=min_gain_hit * risk_mult,
+        )
+        bal_hits = max(0, len(balanced) - free_transfers)
+        bal_gain = sum(t.score_gain for t in balanced)
+        plans.append(TransferPlan(
+            label="balanced",
+            display_label="B: BALANCED",
+            transfers=balanced,
+            total_score_gain=bal_gain,
+            hit_cost=bal_hits * -4,
+            is_recommended=True,
+        ))
+
+        # Plan C: Aggressive — more transfers, lower thresholds
+        agg_limit = free_transfers + max(max_hits, 2)
+        agg_mult = risk_mult * 0.5  # even lower thresholds
+        aggressive = self.get_transfer_recommendations(
+            current_squad_ids,
+            budget=budget,
+            free_transfers=free_transfers,
+            limit=agg_limit,
+            min_gain_free=min_gain_free * agg_mult,
+            min_gain_hit=min_gain_hit * agg_mult,
+        )
+        agg_hits = max(0, len(aggressive) - free_transfers)
+        agg_gain = sum(t.score_gain for t in aggressive)
+        plans.append(TransferPlan(
+            label="aggressive",
+            display_label="C: AGGRESSIVE",
+            transfers=aggressive,
+            total_score_gain=agg_gain,
+            hit_cost=agg_hits * -4,
+            is_recommended=False,
+        ))
+
+        return plans
+
+    def find_player_by_name(self, query: str) -> Optional[Player]:
+        """Find a player by case-insensitive name substring match.
+        Prefers exact match on web_name, then shortest substring match."""
+        query_lower = query.lower().strip()
+        if not query_lower:
+            return None
+
+        # Exact match first
+        for p in self.fpl.get_all_players():
+            if p.web_name.lower() == query_lower:
+                return p
+
+        # Substring matches — prefer shortest web_name (most specific)
+        matches = []
+        for p in self.fpl.get_all_players():
+            if query_lower in p.web_name.lower():
+                matches.append(p)
+
+        if matches:
+            matches.sort(key=lambda p: len(p.web_name))
+            return matches[0]
+
+        return None
+
+    def get_free_hit_squad(
+        self,
+        current_squad_ids: List[int],
+        total_budget: float = 100.0,
+    ) -> Tuple[List[ScoredPlayer], List[TransferRecommendation]]:
+        """Build an optimal 15-player Free Hit squad from scratch.
+
+        Uses a greedy algorithm: score all players, sort by overall_score,
+        and greedily pick the best available respecting position limits,
+        3-per-team rule, and total budget.
+
+        Returns (new_squad, transfers_needed) where transfers_needed only
+        includes players that differ from current_squad_ids.
+        """
+        pos_limits = {"GKP": 2, "DEF": 5, "MID": 5, "FWD": 3}
+
+        # Gather top candidates per position
+        candidates_by_pos: Dict[str, List[ScoredPlayer]] = {}
+        all_candidates: List[ScoredPlayer] = []
+        for pos in pos_limits:
+            candidates = self.scorer.get_top_players(
+                position=pos, limit=50, exclude_unavailable=True
+            )
+            candidates_by_pos[pos] = candidates
+            all_candidates.extend(candidates)
+
+        # Sort by overall score descending
+        all_candidates.sort(key=lambda sp: sp.overall_score, reverse=True)
+
+        # Greedy selection
+        selected: List[ScoredPlayer] = []
+        selected_ids: set = set()
+        pos_counts: Dict[str, int] = {pos: 0 for pos in pos_limits}
+        team_counts: Dict[int, int] = {}
+        remaining_budget = total_budget
+        total_slots = 15
+
+        def _calc_reserved() -> float:
+            """Calculate minimum budget to fill remaining unfilled slots,
+            using the cheapest non-selected candidates per position."""
+            reserved = 0.0
+            for p, limit in pos_limits.items():
+                need = limit - pos_counts[p]
+                if need <= 0:
+                    continue
+                # Get prices of non-selected candidates in this position
+                avail_prices = sorted(
+                    sp.player.price for sp in candidates_by_pos[p]
+                    if sp.player.id not in selected_ids
+                )
+                # Sum the cheapest `need` prices
+                for i in range(min(need, len(avail_prices))):
+                    reserved += avail_prices[i]
+                # If not enough candidates, use a high fallback
+                if len(avail_prices) < need:
+                    reserved += (need - len(avail_prices)) * 5.0
+            return reserved
+
+        for sp in all_candidates:
+            if len(selected) >= total_slots:
+                break
+
+            pos = sp.player.position
+            tid = sp.player.team_id
+            price = sp.player.price
+
+            # Skip if position full
+            if pos_counts[pos] >= pos_limits[pos]:
+                continue
+
+            # Skip if 3-per-team limit reached
+            if team_counts.get(tid, 0) >= 3:
+                continue
+
+            # Check: after picking this player, can we still fill remaining slots?
+            # Temporarily add to selected to get accurate reservation
+            selected_ids.add(sp.player.id)
+            pos_counts[pos] += 1
+            reserved = _calc_reserved()
+            pos_counts[pos] -= 1
+            selected_ids.discard(sp.player.id)
+
+            if price + reserved > remaining_budget:
+                continue
+
+            # Select this player
+            selected.append(sp)
+            selected_ids.add(sp.player.id)
+            pos_counts[pos] += 1
+            team_counts[tid] = team_counts.get(tid, 0) + 1
+            remaining_budget -= price
+
+        # Fallback: fill any remaining positions with cheapest available players
+        if len(selected) < total_slots:
+            for pos in pos_limits:
+                if pos_counts[pos] >= pos_limits[pos]:
+                    continue
+                cheap = sorted(candidates_by_pos[pos], key=lambda sp: sp.player.price)
+                for sp in cheap:
+                    if pos_counts[pos] >= pos_limits[pos]:
+                        break
+                    if sp.player.id in selected_ids:
+                        continue
+                    if team_counts.get(sp.player.team_id, 0) >= 3:
+                        continue
+                    if sp.player.price > remaining_budget:
+                        continue
+                    selected.append(sp)
+                    selected_ids.add(sp.player.id)
+                    pos_counts[pos] += 1
+                    team_counts[sp.player.team_id] = team_counts.get(sp.player.team_id, 0) + 1
+                    remaining_budget -= sp.player.price
+
+        # Build transfer list: pair current squad out → new squad in by position
+        current_set = set(current_squad_ids)
+        new_set = {sp.player.id for sp in selected}
+
+        # Players going out (in current but not in new)
+        outs = []
+        for pid in current_squad_ids:
+            if pid not in new_set:
+                player = self.fpl.get_player(pid)
+                if player:
+                    outs.append(self.scorer.score_player(player))
+
+        # Players coming in (in new but not in current)
+        ins = []
+        for sp in selected:
+            if sp.player.id not in current_set:
+                ins.append(sp)
+
+        # Pair by position
+        transfers: List[TransferRecommendation] = []
+        ins_by_pos: Dict[str, List[ScoredPlayer]] = {}
+        for sp in ins:
+            ins_by_pos.setdefault(sp.player.position, []).append(sp)
+
+        outs_by_pos: Dict[str, List[ScoredPlayer]] = {}
+        for sp in outs:
+            outs_by_pos.setdefault(sp.player.position, []).append(sp)
+
+        for pos in pos_limits:
+            pos_ins = ins_by_pos.get(pos, [])
+            pos_outs = outs_by_pos.get(pos, [])
+            # Sort outs worst-first, ins best-first
+            pos_outs.sort(key=lambda sp: sp.overall_score)
+            pos_ins.sort(key=lambda sp: sp.overall_score, reverse=True)
+
+            for out_sp, in_sp in zip(pos_outs, pos_ins):
+                gain = in_sp.overall_score - out_sp.overall_score
+                price_diff = in_sp.player.price - out_sp.player.price
+                transfers.append(TransferRecommendation(
+                    player_out=out_sp,
+                    player_in=in_sp,
+                    score_gain=gain,
+                    price_diff=price_diff,
+                    reason="free hit rebuild",
+                ))
+
+        transfers.sort(key=lambda t: t.score_gain, reverse=True)
+        return selected, transfers
+
+    def format_free_hit_squad(
+        self,
+        squad: List[ScoredPlayer],
+        transfers: List[TransferRecommendation],
+        total_budget: float,
+    ) -> str:
+        """Format a Free Hit squad for terminal display."""
+        pos_order = ["GKP", "DEF", "MID", "FWD"]
+        by_pos: Dict[str, List[ScoredPlayer]] = {p: [] for p in pos_order}
+        for sp in squad:
+            by_pos[sp.player.position].append(sp)
+
+        squad_cost = sum(sp.player.price for sp in squad)
+        remaining = total_budget - squad_cost
+
+        lines = ["\n   FREE HIT SQUAD"]
+        lines.append("   " + "-" * 50)
+
+        for pos in pos_order:
+            players = sorted(by_pos[pos], key=lambda sp: sp.overall_score, reverse=True)
+            lines.append(f"\n   {pos}:")
+            for sp in players:
+                p = sp.player
+                fixture_run = self.fixtures.get_fixture_run(p.team_id)
+                next_fix = fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                lines.append(
+                    f"      {p.web_name:15} ({p.team:3}) "
+                    f"£{p.price}m | Score: {sp.overall_score:.1f} | "
+                    f"Form: {p.form} | Next: {next_fix}"
+                )
+
+        lines.append(f"\n   Squad cost: £{squad_cost:.1f}m | "
+                      f"Remaining: £{remaining:.1f}m")
+
+        if transfers:
+            lines.append(f"\n   Transfers needed ({len(transfers)}):")
+            for tr in transfers:
+                out_p = tr.player_out.player
+                in_p = tr.player_in.player
+                lines.append(
+                    f"      {out_p.web_name} ({out_p.team}) -> "
+                    f"{in_p.web_name} ({in_p.team}) [{tr.score_gain:+.1f}]"
+                )
+
+        return "\n".join(lines)
+
+    def format_transfer_plans(self, plans: List[TransferPlan]) -> str:
+        """Format transfer plans for terminal display"""
+        lines = []
+        for plan in plans:
+            rec_tag = " (RECOMMENDED)" if plan.is_recommended else ""
+            lines.append(f"\n   --- {plan.display_label}{rec_tag} ---")
+            if not plan.transfers:
+                lines.append("   No transfers")
+            else:
+                for i, tr in enumerate(plan.transfers, 1):
+                    out_p = tr.player_out.player
+                    in_p = tr.player_in.player
+                    price_str = (
+                        f"+{tr.price_diff:.1f}m"
+                        if tr.price_diff > 0
+                        else f"{tr.price_diff:.1f}m"
+                    )
+                    lines.append(
+                        f"   {i}. {out_p.web_name} ({out_p.team}) -> "
+                        f"{in_p.web_name} ({in_p.team})  "
+                        f"[{price_str} | +{tr.score_gain:.1f}]"
+                    )
+                    lines.append(f"      {tr.reason}")
+            hit_str = f" ({plan.hit_cost} pts)" if plan.hit_cost < 0 else " (free)"
+            lines.append(
+                f"   Total: +{plan.total_score_gain:.1f} score gain{hit_str}"
+            )
+        return "\n".join(lines)
 
     def format_full_recommendations(self, rec: FullRecommendation) -> str:
         """Format full recommendations for display"""
@@ -555,6 +996,55 @@ class RecommendationEngine:
             fixtures_str = " ".join(f"{opp}" for _, opp, _, _ in run.fixtures[:5])
             lines.append(f"   {run.team_name[:12]:12} {fixtures_str}")
         lines.append("")
+
+        # League Intel
+        if self.league_intel:
+            lines.append("🕵️ LEAGUE INTEL")
+            lines.append("-" * 40)
+            lines.append(
+                f"   {self.league_intel.league_name} | "
+                f"Rank: {self.league_intel.your_rank}/{self.league_intel.total_managers} | "
+                f"{self.league_intel.points_to_leader} pts behind leader"
+            )
+
+            # Captain advice
+            num_rivals = len(self.league_intel.rivals)
+            if self.league_intel.captain_fades:
+                fade_names = []
+                for pid in self.league_intel.captain_fades:
+                    p = self.fpl.get_player(pid)
+                    if p:
+                        count = self.league_intel.league_captains.get(pid, 0)
+                        fade_names.append(f"{p.web_name} ({count}/{num_rivals})")
+                if fade_names:
+                    lines.append(f"   Captain FADE: {', '.join(fade_names)}")
+
+            if self.league_intel.captain_targets:
+                target_names = []
+                for pid in self.league_intel.captain_targets[:3]:
+                    p = self.fpl.get_player(pid)
+                    if p:
+                        count = self.league_intel.league_captains.get(pid, 0)
+                        target_names.append(f"{p.web_name} ({count}/{num_rivals})")
+                if target_names:
+                    lines.append(f"   Captain TARGET: {', '.join(target_names)}")
+
+            # Top league differentials
+            if self.league_intel.differential_vs_league:
+                diff_entries = []
+                for pid in self.league_intel.differential_vs_league[:5]:
+                    p = self.fpl.get_player(pid)
+                    if p:
+                        pct = self.league_intel.league_ownership.get(pid, 0)
+                        diff_entries.append((p, pct))
+                diff_entries.sort(key=lambda x: x[0].form, reverse=True)
+                if diff_entries:
+                    lines.append("   League differentials:")
+                    for p, pct in diff_entries[:3]:
+                        lines.append(
+                            f"      {p.web_name} ({p.team}) form:{p.form} - {pct:.0f}% of rivals"
+                        )
+            lines.append("")
 
         # Comeback Tips
         lines.append("💡 COMEBACK TIPS")

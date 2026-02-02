@@ -26,6 +26,11 @@ class ScoredPlayer:
     minutes_score: float
     availability: str  # "fit", "doubt", "injured", "suspended"
     injury_details: Optional[str]
+    # New scoring dimensions (defaults for backward compat)
+    ep_next_score: float = 0.0
+    defensive_score: float = 0.0
+    transfer_momentum: float = 0.0
+    availability_multiplier: float = 1.0
 
 
 class PlayerScorer:
@@ -100,12 +105,18 @@ class PlayerScorer:
         return self.fixtures.get_fixture_ease_score(player.team_id, player.position)
 
     def _calculate_value_score(self, player: Player) -> float:
-        """Calculate value score (points per million) (0-10)"""
+        """Calculate value score blending FPL's value_form with season value (0-10)"""
         if player.price <= 0:
             return 0
 
-        points_per_million = player.total_points / player.price
-        return min(10, points_per_million / 1.5)
+        # FPL-calculated recent value (points per £m over last 4 GWs)
+        recent_value = min(10, player.value_form * 3.0)
+
+        # Season-long value
+        season_value = min(10, player.total_points / player.price / 1.5)
+
+        # Blend: 60% recent, 40% season
+        return recent_value * 0.6 + season_value * 0.4
 
     def _calculate_ict_score(self, player: Player) -> float:
         """Calculate ICT index score (0-10)"""
@@ -153,36 +164,127 @@ class PlayerScorer:
         # Top bonus magnets average ~0.8-1.5 bonus/game
         return min(1.0, bonus_per_game / 1.5)
 
+    def _calculate_ep_next_score(self, player: Player) -> float:
+        """Calculate score from FPL's own expected points prediction (0-10).
+        ep_next typically ranges 0-8; this is the strongest single signal."""
+        return min(10, player.ep_next * 1.5)
+
+    def _calculate_defensive_score(self, player: Player) -> float:
+        """Calculate defensive contribution score (0-10). GKP/DEF only."""
+        if player.position not in ("GKP", "DEF"):
+            return 0.0
+
+        current_gw = self.fpl.get_current_gameweek()
+        if current_gw == 0 or player.minutes < 180:
+            return 0.0
+
+        nineties = player.minutes / 90
+
+        if player.position == "GKP":
+            # Clean sheets + saves contribution
+            saves_per_90 = player.saves / nineties if nineties > 0 else 0
+            score = player.clean_sheets_per_90 * 12.5 + saves_per_90 * 0.6
+        else:
+            # DEF: clean sheets minus goals conceded penalty
+            gc_per_90 = player.goals_conceded / nineties if nineties > 0 else 0
+            score = player.clean_sheets_per_90 * 12.5 - gc_per_90 * 0.8
+
+        return max(0, min(10, score))
+
+    def _calculate_transfer_momentum(self, player: Player) -> float:
+        """Calculate transfer momentum bonus (0-2). Market confidence signal."""
+        net_transfers = player.transfers_in_event - player.transfers_out_event
+        return max(0, min(2.0, net_transfers / 50000))
+
+    def _calculate_ict_position_score(self, player: Player) -> float:
+        """Calculate position-decomposed ICT score (0-10).
+        FWD: threat-heavy, MID: creativity+threat, DEF: influence-heavy."""
+        # Normalize raw ICT components (typically 0-1000+ over season)
+        current_gw = self.fpl.get_current_gameweek()
+        if current_gw == 0:
+            return 0.0
+
+        influence = player.influence / current_gw
+        creativity = player.creativity / current_gw
+        threat = player.threat / current_gw
+
+        if player.position == "FWD":
+            raw = threat * 0.6 + creativity * 0.25 + influence * 0.15
+        elif player.position == "MID":
+            raw = creativity * 0.4 + threat * 0.4 + influence * 0.2
+        elif player.position == "DEF":
+            raw = influence * 0.5 + creativity * 0.3 + threat * 0.2
+        else:  # GKP
+            raw = influence * 0.8 + creativity * 0.1 + threat * 0.1
+
+        return min(10, raw / 5)
+
+    def _calculate_availability_multiplier(self, player: Player) -> float:
+        """Calculate availability as a probability multiplier (0.0-1.0).
+        Uses chance_of_playing directly instead of crude binary thresholds."""
+        if player.status in ("i", "s", "u"):
+            return 0.0
+
+        if player.chance_of_playing is not None:
+            if player.chance_of_playing == 0:
+                return 0.0
+            return player.chance_of_playing / 100.0
+
+        # Available with no flag
+        return 1.0
+
     def score_player(self, player: Player) -> ScoredPlayer:
-        """Calculate all scores for a player with expert-level analysis"""
+        """Calculate all scores for a player with position-aware weighting"""
         form_score = self._calculate_form_score(player)
         xgi_score = self._calculate_xgi_score(player)
         fixture_score = self._calculate_fixture_score(player)
         value_score = self._calculate_value_score(player)
         ict_score = self._calculate_ict_score(player)
         minutes_score = self._calculate_minutes_score(player)
+        ep_next_score = self._calculate_ep_next_score(player)
+        defensive_score = self._calculate_defensive_score(player)
+        transfer_momentum = self._calculate_transfer_momentum(player)
+        ict_position_score = self._calculate_ict_position_score(player)
+        availability_mult = self._calculate_availability_multiplier(player)
 
-        # Weighted overall score
-        overall_score = (
-            form_score * self.weights["form"]
-            + xgi_score * self.weights["xgi_per_90"]
-            + fixture_score * self.weights["fixture_ease"]
-            + value_score * self.weights["value_score"]
-            + ict_score * self.weights["ict_index"]
-            + minutes_score * self.weights["minutes_security"]
-        )
+        # Use position-specific weights if available, fall back to legacy
+        pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+
+        if pos_weights:
+            overall_score = (
+                ep_next_score * pos_weights.get("ep_next", 0)
+                + form_score * pos_weights.get("form", 0)
+                + xgi_score * pos_weights.get("xgi_per_90", 0)
+                + fixture_score * pos_weights.get("fixture_ease", 0)
+                + defensive_score * pos_weights.get("defensive", 0)
+                + ict_position_score * pos_weights.get("ict_position", 0)
+                + value_score * pos_weights.get("value_score", 0)
+                + minutes_score * pos_weights.get("minutes_security", 0)
+            )
+        else:
+            # Legacy fallback for backtester/evaluator compatibility
+            overall_score = (
+                form_score * self.weights["form"]
+                + xgi_score * self.weights["xgi_per_90"]
+                + fixture_score * self.weights["fixture_ease"]
+                + value_score * self.weights["value_score"]
+                + ict_score * self.weights["ict_index"]
+                + minutes_score * self.weights["minutes_security"]
+            )
 
         # Expert bonuses (additive, not weighted)
         overall_score += self._calculate_set_piece_bonus(player)
         overall_score += self._calculate_bonus_magnet_score(player)
+        overall_score += transfer_momentum
 
         availability, injury_details = self._get_player_availability(player)
 
-        # Penalize unavailable players
-        if availability == "injured" or availability == "suspended":
-            overall_score *= 0.1
+        # Smooth availability penalty using probability multiplier
+        # Clamp to small floor so injured players still sort meaningfully
+        if availability in ("injured", "suspended"):
+            overall_score *= max(0.05, availability_mult)
         elif availability == "doubt":
-            overall_score *= 0.7
+            overall_score *= max(0.3, availability_mult)
 
         return ScoredPlayer(
             player=player,
@@ -195,6 +297,10 @@ class PlayerScorer:
             minutes_score=minutes_score,
             availability=availability,
             injury_details=injury_details,
+            ep_next_score=ep_next_score,
+            defensive_score=defensive_score,
+            transfer_momentum=transfer_momentum,
+            availability_multiplier=availability_mult,
         )
 
     def get_top_players(

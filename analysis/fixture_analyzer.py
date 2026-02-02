@@ -111,67 +111,67 @@ class FixtureAnalyzer:
         Calculate fixture ease score (0-10, higher = easier).
         Position-aware: attackers care about opponent defence,
         defenders care about opponent attack.
-        Uses home/away strength split.
+        Uses home/away strength split and recency-weighted decay.
         """
         fixtures = self.fpl.get_fixtures_for_team(team_id, self.lookahead)
         if not fixtures:
             return 5.0
 
-        scores = []
+        current_gw = self.fpl.get_current_gameweek()
+        decay_weights = config.FIXTURE_DECAY_WEIGHTS
+        bgw = self.get_blank_gameweeks()
+
+        # Group fixture ease scores by GW offset and apply decay
+        weighted_sum = 0.0
+        weight_total = 0.0
+
         for f in fixtures:
             is_home = f.home_team_id == team_id
             opp_id = f.away_team_id if is_home else f.home_team_id
             opp = self.fpl.get_team(opp_id)
 
             if not opp:
-                scores.append(5.0)
-                continue
+                ease = 5.0
+            else:
+                # Home/away advantage
+                home_bonus = 1.0 if is_home else -0.5
 
-            # Home/away advantage: home teams score ~55-60% of goals
-            home_bonus = 1.0 if is_home else -0.5
+                # Position-specific opponent strength
+                if position in ("FWD", "MID"):
+                    if is_home:
+                        opp_strength = opp.strength_defence_away
+                    else:
+                        opp_strength = opp.strength_defence_home
+                else:  # DEF, GKP
+                    if is_home:
+                        opp_strength = opp.strength_attack_away
+                    else:
+                        opp_strength = opp.strength_attack_home
 
-            # Position-specific opponent strength
-            # Attackers (MID/FWD) care about opponent defensive weakness
-            # Defenders (DEF/GKP) care about opponent attacking weakness
-            if position in ("FWD", "MID"):
-                if is_home:
-                    # We attack at home vs their away defence
-                    opp_strength = opp.strength_defence_away
-                else:
-                    # We attack away vs their home defence
-                    opp_strength = opp.strength_defence_home
-            else:  # DEF, GKP
-                if is_home:
-                    # We defend at home vs their away attack
-                    opp_strength = opp.strength_attack_away
-                else:
-                    # We defend away vs their home attack
-                    opp_strength = opp.strength_attack_home
+                # Strength ~1000-1400 → ease 0-10
+                ease = max(0, min(10, (1400 - opp_strength) / 50 + home_bonus))
 
-            # Strength values are ~1000-1400. Normalize to 0-10 ease score.
-            # Lower opponent strength = easier for us
-            # 1000 = weak opponent (ease ~8), 1400 = strong (ease ~2)
-            ease = max(0, min(10, (1400 - opp_strength) / 50 + home_bonus))
-            scores.append(ease)
+            # GW offset determines decay weight (0-indexed)
+            gw_offset = f.gameweek - current_gw
+            if 0 <= gw_offset < len(decay_weights):
+                w = decay_weights[gw_offset]
+            else:
+                w = decay_weights[-1] if decay_weights else 0.25
 
-        base_score = sum(scores) / len(scores)
+            # DGW handled naturally: 2 fixtures in one GW = 2x weight contribution
+            weighted_sum += ease * w
+            weight_total += w
 
-        # DGW/BGW adjustments
-        dgw = self.get_double_gameweeks()
-        bgw = self.get_blank_gameweeks()
-        current_gw = self.fpl.get_current_gameweek()
+        if weight_total == 0:
+            return 5.0
 
-        has_double = any(
-            team_id in dgw.get(gw, [])
-            for gw in range(current_gw, current_gw + self.lookahead)
-        )
+        base_score = weighted_sum / weight_total
+
+        # BGW penalty: team misses a GW in the lookahead window
         has_blank = any(
             team_id in bgw.get(gw, [])
             for gw in range(current_gw, current_gw + self.lookahead)
         )
-
-        if has_double:
-            base_score += 1.0
         if has_blank:
             base_score -= 1.5
 

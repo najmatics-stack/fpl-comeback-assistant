@@ -47,6 +47,22 @@ class Player:
     chance_of_playing: Optional[int]
     news: str
     status: str  # 'a' = available, 'd' = doubtful, 'i' = injured, 's' = suspended, 'u' = unavailable
+    # New fields for model intelligence
+    ep_next: float = 0.0  # FPL's expected points for next GW
+    ep_this: float = 0.0  # FPL's expected points this GW
+    value_form: float = 0.0  # Points per £m over last 4 GWs (FPL-calculated)
+    value_season: float = 0.0  # Points per £m over season
+    xg_per_90: float = 0.0  # Expected goals per 90
+    xa_per_90: float = 0.0  # Expected assists per 90
+    xgi_per_90: float = 0.0  # Expected goal involvements per 90
+    transfers_in_event: int = 0  # Transfers in this GW
+    transfers_out_event: int = 0  # Transfers out this GW
+    cost_change_event: int = 0  # Price change this GW (tenths)
+    goals_conceded: int = 0  # Goals conceded (DEF/GKP)
+    saves: int = 0  # Saves (GKP)
+    clean_sheets_per_90: float = 0.0  # Normalized clean sheet rate
+    event_points: int = 0  # Last GW actual points
+    dreamteam_count: int = 0  # Elite performance frequency
 
 
 @dataclass
@@ -61,6 +77,14 @@ class Team:
     strength_attack_away: int
     strength_defence_home: int
     strength_defence_away: int
+    # New fields for model intelligence
+    form: Optional[float] = None  # Team form (null early season)
+    played: int = 0
+    wins: int = 0
+    draws: int = 0
+    losses: int = 0
+    points: int = 0  # League points
+    position: int = 0  # League table position
 
 
 @dataclass
@@ -145,6 +169,79 @@ class FPLDataFetcher:
                 self.cache.set(cache_key, data)
                 return data
 
+    async def fetch_team_transfers(self, team_id: int) -> List[Dict[str, Any]]:
+        """Fetch all transfers made by a manager (public endpoint, no auth needed)"""
+        async with aiohttp.ClientSession() as session:
+            url = f"{self.BASE_URL}/entry/{team_id}/transfers/"
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return []
+                return await resp.json()
+
+    async def fetch_current_squad(self, team_id: int) -> Optional[List[dict]]:
+        """Fetch the ACTUAL current squad, accounting for pending transfers.
+
+        The picks endpoint returns the squad at GW deadline. If transfers have
+        already been made for the next GW, those are applied on top to get the
+        real current squad.
+        """
+        current_gw = self.get_current_gameweek()
+        print(f"   [debug] fetch_current_squad: current_gw={current_gw}")
+
+        picks_data = await self.fetch_team_picks(team_id, current_gw)
+
+        if not picks_data or "picks" not in picks_data:
+            print(f"   [debug] No picks for GW{current_gw}, trying GW{current_gw - 1}")
+            picks_data = await self.fetch_team_picks(team_id, current_gw - 1)
+
+        if not picks_data or "picks" not in picks_data:
+            print(f"   [debug] No picks data found at all")
+            return None
+
+        picks = list(picks_data["picks"])
+        base_ids = [p["element"] for p in picks]
+        print(f"   [debug] Base squad from picks endpoint: {base_ids}")
+
+        # Fetch transfers and apply any made for the next GW
+        transfers = await self.fetch_team_transfers(team_id)
+        print(f"   [debug] Total transfers returned by API: {len(transfers)}")
+
+        # Show the most recent transfers for debugging
+        if transfers:
+            recent = transfers[:6]  # API returns newest first
+            for t in recent:
+                print(f"   [debug]   transfer: event={t.get('event')} "
+                      f"out={t.get('element_out')} in={t.get('element_in')} "
+                      f"time={t.get('time', '?')}")
+
+        # Apply transfers for BOTH current GW and next GW
+        # (current GW transfers may not be reflected in picks if GW is in progress)
+        next_gw = current_gw + 1
+        pending = [t for t in transfers if t.get("event") in (current_gw, next_gw)]
+        print(f"   [debug] Pending transfers for GW{current_gw} or GW{next_gw}: {len(pending)}")
+
+        if pending:
+            for t in pending:
+                out_id = t["element_out"]
+                in_id = t["element_in"]
+                # Only apply if out_id is still in picks and in_id is not
+                current_ids = [p["element"] for p in picks]
+                if out_id in current_ids and in_id not in current_ids:
+                    for i, p in enumerate(picks):
+                        if p["element"] == out_id:
+                            picks[i] = dict(p, element=in_id)
+                            break
+                    print(f"   [debug]   Applied: {out_id} -> {in_id}")
+                else:
+                    print(f"   [debug]   Skipped (already applied): {out_id} -> {in_id}")
+
+            applied_ids = [p["element"] for p in picks]
+            print(f"   [debug] Adjusted squad: {applied_ids}")
+        else:
+            print(f"   [debug] No pending transfers found — squad unchanged")
+
+        return picks
+
     async def fetch_player_history(self, player_id: int) -> Dict[str, Any]:
         """Fetch a player's detailed history"""
         cache_key = f"player_{player_id}"
@@ -173,6 +270,10 @@ class FPLDataFetcher:
             return
 
         for t in self._bootstrap_data["teams"]:
+            # Parse form safely — API returns null early season
+            raw_form = t.get("form")
+            team_form = float(raw_form) if raw_form is not None else None
+
             team = Team(
                 id=t["id"],
                 name=t["name"],
@@ -182,6 +283,13 @@ class FPLDataFetcher:
                 strength_attack_away=t["strength_attack_away"],
                 strength_defence_home=t["strength_defence_home"],
                 strength_defence_away=t["strength_defence_away"],
+                form=team_form,
+                played=t.get("played", 0),
+                wins=t.get("win", 0),
+                draws=t.get("draw", 0),
+                losses=t.get("loss", 0),
+                points=t.get("points", 0),
+                position=t.get("position", 0),
             )
             self._teams[team.id] = team
 
@@ -192,6 +300,21 @@ class FPLDataFetcher:
 
         for p in self._bootstrap_data["elements"]:
             team = self._teams.get(p["team"])
+            minutes = p["minutes"]
+
+            # Calculate per-90 stats safely
+            if minutes >= 90:
+                nineties = minutes / 90
+                xg_per_90 = float(p.get("expected_goals") or 0) / nineties
+                xa_per_90 = float(p.get("expected_assists") or 0) / nineties
+                xgi_per_90 = float(p.get("expected_goal_involvements") or 0) / nineties
+                cs_per_90 = p.get("clean_sheets", 0) / nineties
+            else:
+                xg_per_90 = 0.0
+                xa_per_90 = 0.0
+                xgi_per_90 = 0.0
+                cs_per_90 = 0.0
+
             player = Player(
                 id=p["id"],
                 name=f"{p['first_name']} {p['second_name']}",
@@ -204,7 +327,7 @@ class FPLDataFetcher:
                 form=float(p["form"]),
                 points_per_game=float(p["points_per_game"]),
                 selected_by_percent=float(p["selected_by_percent"]),
-                minutes=p["minutes"],
+                minutes=minutes,
                 goals_scored=p["goals_scored"],
                 assists=p["assists"],
                 clean_sheets=p["clean_sheets"],
@@ -226,6 +349,21 @@ class FPLDataFetcher:
                 chance_of_playing=p["chance_of_playing_next_round"],
                 news=p["news"],
                 status=p["status"],
+                ep_next=float(p.get("ep_next") or 0),
+                ep_this=float(p.get("ep_this") or 0),
+                value_form=float(p.get("value_form") or 0),
+                value_season=float(p.get("value_season") or 0),
+                xg_per_90=xg_per_90,
+                xa_per_90=xa_per_90,
+                xgi_per_90=xgi_per_90,
+                transfers_in_event=p.get("transfers_in_event", 0),
+                transfers_out_event=p.get("transfers_out_event", 0),
+                cost_change_event=p.get("cost_change_event", 0),
+                goals_conceded=p.get("goals_conceded", 0),
+                saves=p.get("saves", 0),
+                clean_sheets_per_90=cs_per_90,
+                event_points=p.get("event_points", 0),
+                dreamteam_count=p.get("dreamteam_count", 0),
             )
             self._players[player.id] = player
 
