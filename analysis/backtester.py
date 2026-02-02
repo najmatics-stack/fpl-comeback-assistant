@@ -71,6 +71,9 @@ class PreGWSnapshot:
     total_influence: float
     total_creativity: float
     total_threat: float
+    total_saves: int
+    total_goals_conceded: int
+    total_transfers_balance: int
     games_played: int
     form: float  # avg points over last 5 GWs played
     starts: int
@@ -181,14 +184,23 @@ class Backtester:
             total_influence=sum(float(h.get("influence", 0) or 0) for h in pre_gw),
             total_creativity=sum(float(h.get("creativity", 0) or 0) for h in pre_gw),
             total_threat=sum(float(h.get("threat", 0) or 0) for h in pre_gw),
+            total_saves=sum(h.get("saves", 0) for h in pre_gw),
+            total_goals_conceded=sum(h.get("goals_conceded", 0) for h in pre_gw),
+            total_transfers_balance=pre_gw[-1].get("transfers_balance", 0) if pre_gw else 0,
             games_played=games_played,
             form=form,
             starts=starts,
         )
 
     def _score_snapshot(self, snap: PreGWSnapshot, fixture_analyzer: FixtureAnalyzer) -> float:
-        """Score a pre-GW snapshot using the shared scoring algorithm"""
+        """Score a pre-GW snapshot matching the live model as closely as possible.
+
+        Uses POSITION_WEIGHTS (the real model) when available, with all factors
+        the live scorer computes. ep_next is unavailable in historical data so
+        it's estimated from form as a proxy.
+        """
         gp = snap.games_played or 1
+        nineties = snap.total_minutes / 90 if snap.total_minutes > 0 else 1
 
         # Form (0-10)
         form_score = min(10, snap.form)
@@ -201,18 +213,14 @@ class Backtester:
         else:
             xgi_score = 0
 
-        # Fixture ease (0-10)
-        fixture_score = fixture_analyzer.get_fixture_ease_score(snap.team_id)
+        # Fixture ease (0-10), position-aware
+        fixture_score = fixture_analyzer.get_fixture_ease_score(snap.team_id, snap.position)
 
         # Value (0-10)
         if snap.price > 0:
             value_score = min(10, (snap.total_points / snap.price) / 1.5)
         else:
             value_score = 0
-
-        # ICT (0-10)
-        ict = snap.total_influence + snap.total_creativity + snap.total_threat
-        ict_score = min(10, (ict / gp) / 50)
 
         # Minutes security (0-10)
         avg_min = snap.total_minutes / gp
@@ -224,19 +232,72 @@ class Backtester:
             elif starts_ratio < 0.5:
                 minutes_score *= 0.7
 
-        factors = {
-            "form": form_score,
-            "xgi_per_90": xgi_score,
-            "fixture_ease": fixture_score,
-            "value_score": value_score,
-            "ict_index": ict_score,
-            "minutes_security": minutes_score,
-        }
+        # ep_next proxy: form * 1.5 (matches live scorer's scaling)
+        # The live model uses FPL's ep_next which isn't in historical data
+        ep_next_score = min(10, snap.form * 1.5)
+
+        # Defensive score (0-10) — GKP/DEF only
+        defensive_score = 0.0
+        if snap.position in ("GKP", "DEF") and snap.total_minutes >= 180:
+            if snap.position == "GKP":
+                saves_per_90 = snap.total_saves / nineties
+                defensive_score = (snap.total_clean_sheets / nineties) * 12.5 + saves_per_90 * 0.6
+            else:
+                gc_per_90 = snap.total_goals_conceded / nineties
+                defensive_score = (snap.total_clean_sheets / nineties) * 12.5 - gc_per_90 * 0.8
+            defensive_score = max(0, min(10, defensive_score))
+
+        # ICT position score (0-10) — position-aware decomposition
+        influence_pg = snap.total_influence / gp
+        creativity_pg = snap.total_creativity / gp
+        threat_pg = snap.total_threat / gp
+        if snap.position == "FWD":
+            ict_pos_raw = threat_pg * 0.6 + creativity_pg * 0.25 + influence_pg * 0.15
+        elif snap.position == "MID":
+            ict_pos_raw = creativity_pg * 0.4 + threat_pg * 0.4 + influence_pg * 0.2
+        elif snap.position == "DEF":
+            ict_pos_raw = influence_pg * 0.5 + creativity_pg * 0.3 + threat_pg * 0.2
+        else:
+            ict_pos_raw = influence_pg * 0.8 + creativity_pg * 0.1 + threat_pg * 0.1
+        ict_position_score = min(10, ict_pos_raw / 5)
+
+        # Legacy ICT (for SCORING_WEIGHTS fallback)
+        ict_total = snap.total_influence + snap.total_creativity + snap.total_threat
+        ict_score = min(10, (ict_total / gp) / 50)
+
+        # Use position-specific weights if available (matches live model)
+        pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(snap.position)
+
+        if pos_weights:
+            factors = {
+                "ep_next": ep_next_score,
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "defensive": defensive_score,
+                "ict_position": ict_position_score,
+                "value_score": value_score,
+                "minutes_security": minutes_score,
+            }
+            weights = pos_weights
+        else:
+            factors = {
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "value_score": value_score,
+                "ict_index": ict_score,
+                "minutes_security": minutes_score,
+            }
+            weights = config.SCORING_WEIGHTS
+
+        # Bonuses — same as live model (set_piece not available in history)
         bonuses = {
             "bonus_magnet": min(1.0, (snap.total_bonus / gp) / 1.5),
+            "transfer_momentum": max(0, min(2.0, snap.total_transfers_balance / 50000)),
         }
 
-        return compute_weighted_score(factors, config.SCORING_WEIGHTS, bonuses)
+        return compute_weighted_score(factors, weights, bonuses)
 
     def _get_actual_gw_points(self, player_id: int, target_gw: int) -> int:
         """Get actual points for a player in a specific gameweek"""

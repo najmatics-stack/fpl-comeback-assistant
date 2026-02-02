@@ -90,12 +90,13 @@ class ComparativeBacktester:
         d_sq = sum((rx[i] - ry[i]) ** 2 for i in range(n))
         return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
 
-    # ---- MODEL 1: Our model (weighted composite) ----
+    # ---- MODEL 1: Our model (weighted composite, matches live scorer) ----
     def _score_ours(self, player: Player, pre_gw: List[Dict], fixture_analyzer: FixtureAnalyzer) -> float:
         gp = len(pre_gw)
         total_min = sum(h["minutes"] for h in pre_gw)
         if total_min < 90:
             return 0
+        nineties = total_min / 90
 
         recent = pre_gw[-5:]
         form = min(10, sum(h["total_points"] for h in recent) / len(recent))
@@ -111,9 +112,6 @@ class ComparativeBacktester:
         price = pre_gw[-1]["value"] / 10
         value = min(10, (total_pts / price) / 1.5) if price > 0 else 0
 
-        ict_total = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
-        ict = min(10, (ict_total / gp) / 50)
-
         avg_min = total_min / gp
         minutes = min(10, avg_min / 9)
         starts = sum(1 for h in pre_gw if h["minutes"] >= 60)
@@ -124,19 +122,69 @@ class ComparativeBacktester:
             elif sr < 0.5:
                 minutes *= 0.7
 
-        factors = {
-            "form": form,
-            "xgi_per_90": xgi_score,
-            "fixture_ease": fixture,
-            "value_score": value,
-            "ict_index": ict,
-            "minutes_security": minutes,
-        }
+        # ep_next proxy (not in historical data)
+        ep_next_score = min(10, form * 1.5)
+
+        # Defensive score (GKP/DEF only)
+        defensive_score = 0.0
+        if player.position in ("GKP", "DEF") and total_min >= 180:
+            total_cs = sum(h.get("clean_sheets", 0) for h in pre_gw)
+            total_gc = sum(h.get("goals_conceded", 0) for h in pre_gw)
+            if player.position == "GKP":
+                total_saves = sum(h.get("saves", 0) for h in pre_gw)
+                defensive_score = (total_cs / nineties) * 12.5 + (total_saves / nineties) * 0.6
+            else:
+                defensive_score = (total_cs / nineties) * 12.5 - (total_gc / nineties) * 0.8
+            defensive_score = max(0, min(10, defensive_score))
+
+        # ICT position score
+        influence_pg = sum(float(h.get("influence", 0) or 0) for h in pre_gw) / gp
+        creativity_pg = sum(float(h.get("creativity", 0) or 0) for h in pre_gw) / gp
+        threat_pg = sum(float(h.get("threat", 0) or 0) for h in pre_gw) / gp
+        if player.position == "FWD":
+            ict_pos_raw = threat_pg * 0.6 + creativity_pg * 0.25 + influence_pg * 0.15
+        elif player.position == "MID":
+            ict_pos_raw = creativity_pg * 0.4 + threat_pg * 0.4 + influence_pg * 0.2
+        elif player.position == "DEF":
+            ict_pos_raw = influence_pg * 0.5 + creativity_pg * 0.3 + threat_pg * 0.2
+        else:
+            ict_pos_raw = influence_pg * 0.8 + creativity_pg * 0.1 + threat_pg * 0.1
+        ict_position_score = min(10, ict_pos_raw / 5)
+
+        # Use position-specific weights (matches live model)
+        pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+
+        if pos_weights:
+            factors = {
+                "ep_next": ep_next_score,
+                "form": form,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture,
+                "defensive": defensive_score,
+                "ict_position": ict_position_score,
+                "value_score": value,
+                "minutes_security": minutes,
+            }
+            weights = pos_weights
+        else:
+            ict_total = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
+            ict = min(10, (ict_total / gp) / 50)
+            factors = {
+                "form": form,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture,
+                "value_score": value,
+                "ict_index": ict,
+                "minutes_security": minutes,
+            }
+            weights = config.SCORING_WEIGHTS
+
         bonuses = {
             "bonus_magnet": min(1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5),
+            "transfer_momentum": max(0, min(2.0, pre_gw[-1].get("transfers_balance", 0) / 50000)),
         }
 
-        return compute_weighted_score(factors, config.SCORING_WEIGHTS, bonuses)
+        return compute_weighted_score(factors, weights, bonuses)
 
     # ---- MODEL 2: Last 5 average (simple baseline) ----
     def _score_last5avg(self, pre_gw: List[Dict]) -> float:

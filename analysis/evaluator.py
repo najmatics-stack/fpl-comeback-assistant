@@ -74,7 +74,8 @@ class ModelEvaluator:
                     await asyncio.sleep(0.5)
 
     def _get_pre_gw_factors(self, player: Player, target_gw: int, fixture_analyzer: FixtureAnalyzer) -> Optional[Dict[str, float]]:
-        """Compute each scoring factor for a player using only pre-GW data"""
+        """Compute each scoring factor for a player using only pre-GW data.
+        Returns the factor set matching the live model (position-aware)."""
         history = self._gw_history.get(player.id, [])
         pre_gw = [h for h in history if h["round"] < target_gw and h["minutes"] > 0]
 
@@ -86,6 +87,8 @@ class ModelEvaluator:
 
         if total_minutes < 90:
             return None
+
+        nineties = total_minutes / 90
 
         # Form: avg points last 5
         recent = pre_gw[-5:]
@@ -106,10 +109,6 @@ class ModelEvaluator:
         price = pre_gw[-1]["value"] / 10 if pre_gw else player.price
         value_score = min(10, (total_pts / price) / 1.5) if price > 0 else 0
 
-        # ICT
-        total_ict = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
-        ict_score = min(10, (total_ict / gp) / 50)
-
         # Minutes
         avg_min = total_minutes / gp
         starts = sum(1 for h in pre_gw if h["minutes"] >= 60)
@@ -121,14 +120,59 @@ class ModelEvaluator:
             elif sr < 0.5:
                 minutes_score *= 0.7
 
-        return {
-            "form": form_score,
-            "xgi_per_90": xgi_score,
-            "fixture_ease": fixture_score,
-            "value_score": value_score,
-            "ict_index": ict_score,
-            "minutes_security": minutes_score,
-        }
+        # ep_next proxy
+        ep_next_score = min(10, form * 1.5)
+
+        # Defensive score (GKP/DEF only)
+        defensive_score = 0.0
+        if player.position in ("GKP", "DEF") and total_minutes >= 180:
+            total_cs = sum(h.get("clean_sheets", 0) for h in pre_gw)
+            total_gc = sum(h.get("goals_conceded", 0) for h in pre_gw)
+            if player.position == "GKP":
+                total_saves = sum(h.get("saves", 0) for h in pre_gw)
+                defensive_score = (total_cs / nineties) * 12.5 + (total_saves / nineties) * 0.6
+            else:
+                defensive_score = (total_cs / nineties) * 12.5 - (total_gc / nineties) * 0.8
+            defensive_score = max(0, min(10, defensive_score))
+
+        # ICT position score
+        influence_pg = sum(float(h.get("influence", 0) or 0) for h in pre_gw) / gp
+        creativity_pg = sum(float(h.get("creativity", 0) or 0) for h in pre_gw) / gp
+        threat_pg = sum(float(h.get("threat", 0) or 0) for h in pre_gw) / gp
+        if player.position == "FWD":
+            ict_pos_raw = threat_pg * 0.6 + creativity_pg * 0.25 + influence_pg * 0.15
+        elif player.position == "MID":
+            ict_pos_raw = creativity_pg * 0.4 + threat_pg * 0.4 + influence_pg * 0.2
+        elif player.position == "DEF":
+            ict_pos_raw = influence_pg * 0.5 + creativity_pg * 0.3 + threat_pg * 0.2
+        else:
+            ict_pos_raw = influence_pg * 0.8 + creativity_pg * 0.1 + threat_pg * 0.1
+        ict_position_score = min(10, ict_pos_raw / 5)
+
+        # Return factor set matching position weights
+        pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+        if pos_weights:
+            return {
+                "ep_next": ep_next_score,
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "defensive": defensive_score,
+                "ict_position": ict_position_score,
+                "value_score": value_score,
+                "minutes_security": minutes_score,
+            }
+        else:
+            total_ict = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
+            ict_score = min(10, (total_ict / gp) / 50)
+            return {
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "value_score": value_score,
+                "ict_index": ict_score,
+                "minutes_security": minutes_score,
+            }
 
     def _get_actual_gw_points(self, player_id: int, gw: int) -> Optional[int]:
         history = self._gw_history.get(player_id, [])
@@ -158,12 +202,20 @@ class ModelEvaluator:
         return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
 
     async def evaluate_gameweek(self, target_gw: int) -> EvaluationResult:
-        """Evaluate model on a completed gameweek and suggest weight adjustments"""
+        """Evaluate model on a completed gameweek and suggest weight adjustments.
+        Uses the actual position-specific weights when available."""
         players = [p for p in self.fpl.get_all_players() if p.minutes > 0]
         await self._fetch_histories([p.id for p in players])
 
         fixture_analyzer = FixtureAnalyzer(self.fpl)
-        current_weights = dict(config.SCORING_WEIGHTS)
+
+        # Determine which weight system we're evaluating
+        # Use the first position's weights as representative for factor names
+        sample_pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get("MID")
+        if sample_pos_weights:
+            current_weights = dict(sample_pos_weights)
+        else:
+            current_weights = dict(config.SCORING_WEIGHTS)
 
         # Collect factor scores and actual points for all qualifying players
         factor_names = list(current_weights.keys())
@@ -179,11 +231,13 @@ class ModelEvaluator:
                 continue
 
             for f in factor_names:
-                factor_values[f].append(factors[f])
+                factor_values[f].append(factors.get(f, 0))
             actual_points.append(float(actual))
 
-            # Overall weighted score
-            score = compute_weighted_score(factors, current_weights)
+            # Overall weighted score using position-specific weights
+            pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+            weights = pos_weights if pos_weights else config.SCORING_WEIGHTS
+            score = compute_weighted_score(factors, weights)
             overall_scores.append(score)
 
         # Compute correlation per factor
