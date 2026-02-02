@@ -12,6 +12,7 @@ import aiohttp
 import config
 from data.fpl_api import FPLDataFetcher, Player
 from analysis.fixture_analyzer import FixtureAnalyzer
+from analysis.player_scorer import compute_weighted_score
 
 BASE_URL = "https://fantasy.premierleague.com/api"
 
@@ -101,7 +102,7 @@ class ComparativeBacktester:
 
         xgi = sum(float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw)
         xgi_p90 = (xgi / total_min) * 90
-        mult = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}.get(player.position, 12.5)
+        mult = config.XGI_POSITION_MULTIPLIERS.get(player.position, 12.5)
         xgi_score = min(10, xgi_p90 * mult)
 
         fixture = fixture_analyzer.get_fixture_ease_score(player.team_id, player.position)
@@ -123,12 +124,19 @@ class ComparativeBacktester:
             elif sr < 0.5:
                 minutes *= 0.7
 
-        bonus_pg = sum(h.get("bonus", 0) for h in pre_gw) / gp
-        bonus = min(1.0, bonus_pg / 1.5)
+        factors = {
+            "form": form,
+            "xgi_per_90": xgi_score,
+            "fixture_ease": fixture,
+            "value_score": value,
+            "ict_index": ict,
+            "minutes_security": minutes,
+        }
+        bonuses = {
+            "bonus_magnet": min(1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5),
+        }
 
-        w = config.SCORING_WEIGHTS
-        return (form * w["form"] + xgi_score * w["xgi_per_90"] + fixture * w["fixture_ease"]
-                + value * w["value_score"] + ict * w["ict_index"] + minutes * w["minutes_security"] + bonus)
+        return compute_weighted_score(factors, config.SCORING_WEIGHTS, bonuses)
 
     # ---- MODEL 2: Last 5 average (simple baseline) ----
     def _score_last5avg(self, pre_gw: List[Dict]) -> float:

@@ -15,6 +15,7 @@ import numpy as np
 import config
 from data.fpl_api import FPLDataFetcher, Player
 from analysis.fixture_analyzer import FixtureAnalyzer
+from analysis.player_scorer import compute_weighted_score
 
 WEIGHTS_FILE = Path("weights_history.json")
 
@@ -94,7 +95,7 @@ class ModelEvaluator:
         # xGI per 90
         total_xgi = sum(float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw)
         xgi_per_90 = (total_xgi / total_minutes) * 90
-        mult = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}.get(player.position, 12.5)
+        mult = config.XGI_POSITION_MULTIPLIERS.get(player.position, 12.5)
         xgi_score = min(10, xgi_per_90 * mult)
 
         # Fixture ease
@@ -182,7 +183,7 @@ class ModelEvaluator:
             actual_points.append(float(actual))
 
             # Overall weighted score
-            score = sum(factors[f] * current_weights[f] for f in factor_names)
+            score = compute_weighted_score(factors, current_weights)
             overall_scores.append(score)
 
         # Compute correlation per factor

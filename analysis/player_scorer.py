@@ -12,6 +12,27 @@ from analysis.fixture_analyzer import FixtureAnalyzer
 import config
 
 
+def compute_weighted_score(
+    factors: Dict[str, float],
+    weights: Dict[str, float],
+    bonuses: Optional[Dict[str, float]] = None,
+) -> float:
+    """Single source of truth for combining factor scores into an overall score.
+
+    Args:
+        factors: Factor name -> score (0-10 scale each)
+        weights: Factor name -> weight (should sum to ~1.0)
+        bonuses: Optional additive bonuses (not weighted, added directly)
+
+    Returns:
+        Overall weighted score
+    """
+    score = sum(factors.get(k, 0) * w for k, w in weights.items())
+    if bonuses:
+        score += sum(bonuses.values())
+    return score
+
+
 @dataclass
 class ScoredPlayer:
     """Player with computed scores"""
@@ -95,8 +116,7 @@ class PlayerScorer:
         xgi_per_90 = (player.expected_goal_involvements / player.minutes) * 90
 
         # Position-adjusted thresholds: defenders get credit for lower xGI
-        multipliers = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}
-        mult = multipliers.get(player.position, 12.5)
+        mult = config.XGI_POSITION_MULTIPLIERS.get(player.position, 12.5)
 
         return min(10, xgi_per_90 * mult)
 
@@ -251,31 +271,35 @@ class PlayerScorer:
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
 
         if pos_weights:
-            overall_score = (
-                ep_next_score * pos_weights.get("ep_next", 0)
-                + form_score * pos_weights.get("form", 0)
-                + xgi_score * pos_weights.get("xgi_per_90", 0)
-                + fixture_score * pos_weights.get("fixture_ease", 0)
-                + defensive_score * pos_weights.get("defensive", 0)
-                + ict_position_score * pos_weights.get("ict_position", 0)
-                + value_score * pos_weights.get("value_score", 0)
-                + minutes_score * pos_weights.get("minutes_security", 0)
-            )
+            factors = {
+                "ep_next": ep_next_score,
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "defensive": defensive_score,
+                "ict_position": ict_position_score,
+                "value_score": value_score,
+                "minutes_security": minutes_score,
+            }
+            weights = pos_weights
         else:
-            # Legacy fallback for backtester/evaluator compatibility
-            overall_score = (
-                form_score * self.weights["form"]
-                + xgi_score * self.weights["xgi_per_90"]
-                + fixture_score * self.weights["fixture_ease"]
-                + value_score * self.weights["value_score"]
-                + ict_score * self.weights["ict_index"]
-                + minutes_score * self.weights["minutes_security"]
-            )
+            factors = {
+                "form": form_score,
+                "xgi_per_90": xgi_score,
+                "fixture_ease": fixture_score,
+                "value_score": value_score,
+                "ict_index": ict_score,
+                "minutes_security": minutes_score,
+            }
+            weights = self.weights
 
-        # Expert bonuses (additive, not weighted)
-        overall_score += self._calculate_set_piece_bonus(player)
-        overall_score += self._calculate_bonus_magnet_score(player)
-        overall_score += transfer_momentum
+        bonuses = {
+            "set_piece": self._calculate_set_piece_bonus(player),
+            "bonus_magnet": self._calculate_bonus_magnet_score(player),
+            "transfer_momentum": transfer_momentum,
+        }
+
+        overall_score = compute_weighted_score(factors, weights, bonuses)
 
         availability, injury_details = self._get_player_availability(player)
 

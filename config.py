@@ -58,6 +58,9 @@ POSITION_WEIGHTS = {
     },
 }
 
+# Position-specific xGI multipliers (converts xGI/90 to 0-10 scale)
+XGI_POSITION_MULTIPLIERS = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}
+
 # Fixture recency decay weights: GW+1 through GW+5
 # Next GW matters most, distant fixtures matter less
 FIXTURE_DECAY_WEIGHTS = [1.0, 0.7, 0.5, 0.35, 0.25]

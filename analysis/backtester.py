@@ -14,6 +14,7 @@ import pandas as pd
 import config
 from data.fpl_api import FPLDataFetcher, Player
 from analysis.fixture_analyzer import FixtureAnalyzer
+from analysis.player_scorer import compute_weighted_score
 
 # FPL scoring rules per position
 CLEAN_SHEET_PTS = {"GKP": 4, "DEF": 4, "MID": 1, "FWD": 0}
@@ -186,8 +187,7 @@ class Backtester:
         )
 
     def _score_snapshot(self, snap: PreGWSnapshot, fixture_analyzer: FixtureAnalyzer) -> float:
-        """Score a pre-GW snapshot using our algorithm (mirrors player_scorer.py logic)"""
-        weights = config.SCORING_WEIGHTS
+        """Score a pre-GW snapshot using the shared scoring algorithm"""
         gp = snap.games_played or 1
 
         # Form (0-10)
@@ -196,7 +196,7 @@ class Backtester:
         # xGI per 90 (0-10), position-aware
         if snap.total_minutes >= 90:
             xgi_per_90 = (snap.total_xgi / snap.total_minutes) * 90
-            mult = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}.get(snap.position, 12.5)
+            mult = config.XGI_POSITION_MULTIPLIERS.get(snap.position, 12.5)
             xgi_score = min(10, xgi_per_90 * mult)
         else:
             xgi_score = 0
@@ -224,20 +224,19 @@ class Backtester:
             elif starts_ratio < 0.5:
                 minutes_score *= 0.7
 
-        # Bonus magnet (0-1)
-        bonus_score = min(1.0, (snap.total_bonus / gp) / 1.5)
+        factors = {
+            "form": form_score,
+            "xgi_per_90": xgi_score,
+            "fixture_ease": fixture_score,
+            "value_score": value_score,
+            "ict_index": ict_score,
+            "minutes_security": minutes_score,
+        }
+        bonuses = {
+            "bonus_magnet": min(1.0, (snap.total_bonus / gp) / 1.5),
+        }
 
-        overall = (
-            form_score * weights["form"]
-            + xgi_score * weights["xgi_per_90"]
-            + fixture_score * weights["fixture_ease"]
-            + value_score * weights["value_score"]
-            + ict_score * weights["ict_index"]
-            + minutes_score * weights["minutes_security"]
-            + bonus_score
-        )
-
-        return overall
+        return compute_weighted_score(factors, config.SCORING_WEIGHTS, bonuses)
 
     def _get_actual_gw_points(self, player_id: int, target_gw: int) -> int:
         """Get actual points for a player in a specific gameweek"""
