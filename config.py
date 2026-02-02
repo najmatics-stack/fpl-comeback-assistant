@@ -20,41 +20,43 @@ SCORING_WEIGHTS = {
 
 # Position-specific weight profiles for the enhanced scoring model
 # Each position emphasizes different factors; keys match scoring methods in PlayerScorer
+# Tuned via correlation analysis over GW15-23 (50/50 blend of prior + correlation-proportional)
+# Key changes: value_score up (strongest signal), fixture_ease down (weakest signal)
 POSITION_WEIGHTS = {
     "GKP": {
         "ep_next": 0.20,
-        "form": 0.10,
-        "fixture_ease": 0.25,
+        "form": 0.15,
+        "fixture_ease": 0.10,
         "defensive": 0.20,
-        "value_score": 0.10,
-        "minutes_security": 0.15,
+        "value_score": 0.18,
+        "minutes_security": 0.17,
     },
     "DEF": {
         "ep_next": 0.20,
-        "form": 0.10,
-        "xgi_per_90": 0.10,
-        "fixture_ease": 0.20,
+        "form": 0.15,
+        "xgi_per_90": 0.12,
+        "fixture_ease": 0.10,
         "defensive": 0.15,
-        "value_score": 0.10,
-        "minutes_security": 0.15,
+        "value_score": 0.18,
+        "minutes_security": 0.10,
     },
     "MID": {
         "ep_next": 0.20,
-        "form": 0.12,
-        "xgi_per_90": 0.18,
-        "fixture_ease": 0.18,
-        "ict_position": 0.10,
-        "value_score": 0.12,
-        "minutes_security": 0.10,
+        "form": 0.15,
+        "xgi_per_90": 0.12,
+        "fixture_ease": 0.10,
+        "ict_position": 0.13,
+        "value_score": 0.18,
+        "minutes_security": 0.12,
     },
     "FWD": {
         "ep_next": 0.20,
-        "form": 0.12,
-        "xgi_per_90": 0.20,
-        "fixture_ease": 0.15,
-        "ict_position": 0.10,
-        "value_score": 0.13,
-        "minutes_security": 0.10,
+        "form": 0.15,
+        "xgi_per_90": 0.12,
+        "fixture_ease": 0.10,
+        "ict_position": 0.13,
+        "value_score": 0.18,
+        "minutes_security": 0.12,
     },
 }
 
