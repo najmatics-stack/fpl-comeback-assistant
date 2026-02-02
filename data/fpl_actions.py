@@ -10,6 +10,7 @@ FPL migrated to OAuth2 (account.premierleague.com) in 2025.
 Auth tokens are stored in the browser's localStorage, not cookies.
 """
 
+import getpass
 import json
 import os
 import time
@@ -20,6 +21,7 @@ import aiohttp
 
 SESSION_FILE = Path.home() / ".fpl_session"
 COOKIE_FILE = Path.home() / ".fpl_cookies"  # Legacy, checked for migration
+CREDENTIALS_FILE = Path.home() / ".fpl_credentials"
 FPL_DOMAIN = "fantasy.premierleague.com"
 
 
@@ -369,6 +371,34 @@ def _load_session() -> Optional[Dict[str, str]]:
     return None
 
 
+# --- Credentials ---
+
+def _load_credentials() -> Optional[Tuple[str, str]]:
+    """Load email/password from ~/.fpl_credentials"""
+    if not CREDENTIALS_FILE.exists():
+        return None
+    try:
+        data = json.loads(CREDENTIALS_FILE.read_text())
+        email = data.get("email", "").strip()
+        password = data.get("password", "")
+        if email and password:
+            return (email, password)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return None
+
+
+def _prompt_and_save_credentials() -> Tuple[str, str]:
+    """Prompt user for FPL email/password and save to ~/.fpl_credentials"""
+    print("   Enter your FPL login credentials (saved to ~/.fpl_credentials)")
+    email = input("   Email: ").strip()
+    password = getpass.getpass("   Password: ")
+    data = {"email": email, "password": password}
+    CREDENTIALS_FILE.write_text(json.dumps(data))
+    os.chmod(CREDENTIALS_FILE, 0o600)
+    return (email, password)
+
+
 # --- Selenium browser login ---
 
 def _selenium_login() -> Optional[Dict[str, str]]:
@@ -397,7 +427,238 @@ def _selenium_login() -> Optional[Dict[str, str]]:
         FPL_TARGET = "https://fantasy.premierleague.com/my-team"
         driver.get(FPL_TARGET)
 
-        print("   Log in to FPL in the Chrome window...")
+        # --- Auto-fill login ---
+        try:
+            import traceback
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            creds = _load_credentials()
+            if not creds:
+                creds = _prompt_and_save_credentials()
+            email, password = creds
+
+            print("   Attempting auto-login...")
+            print(f"   [debug] Current URL: {driver.current_url}")
+
+            # Step 1: Let the page load
+            time.sleep(3)
+
+            # Step 2: Dismiss cookie consent banner (blocks clicks on elements behind it)
+            if FPL_DOMAIN in driver.current_url:
+                print("   [debug] Dismissing cookie banner...")
+                for consent_text in ["Accept All Cookies", "Accept All"]:
+                    try:
+                        for b in driver.find_elements(By.TAG_NAME, "button"):
+                            if b.text.strip() == consent_text:
+                                b.click()
+                                print(f"   [debug] Clicked '{consent_text}'")
+                                time.sleep(1)
+                                break
+                    except Exception:
+                        continue
+
+                # Step 3: Click "Log in" button to trigger OAuth redirect
+                print("   [debug] Looking for Log in button...")
+                clicked = False
+                for b in driver.find_elements(By.TAG_NAME, "button"):
+                    try:
+                        text = b.text.strip().lower()
+                        if text == "log in":
+                            print(f"   [debug] Clicking 'Log in' button")
+                            b.click()
+                            clicked = True
+                            break
+                    except Exception as click_err:
+                        print(f"   [debug] Click failed: {click_err}")
+                        continue
+
+                if not clicked:
+                    # Fallback: try JavaScript click
+                    for b in driver.find_elements(By.TAG_NAME, "button"):
+                        try:
+                            if b.text.strip().lower() == "log in":
+                                driver.execute_script("arguments[0].click();", b)
+                                print("   [debug] Clicked 'Log in' via JS")
+                                clicked = True
+                                break
+                        except Exception:
+                            continue
+
+                if clicked:
+                    # Wait for either: URL change, login form appears, or iframe loads
+                    print("   [debug] Waiting for login page to load...")
+                    pre_click_url = driver.current_url
+                    time.sleep(3)
+
+                    # Log what happened after clicking
+                    print(f"   [debug] URL after click: {driver.current_url}")
+
+                    # Check for iframes (login might be in an iframe)
+                    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+                    print(f"   [debug] Found {len(iframes)} iframes")
+                    for i, iframe in enumerate(iframes):
+                        try:
+                            src = iframe.get_attribute("src") or ""
+                            name = iframe.get_attribute("name") or ""
+                            iframe_id = iframe.get_attribute("id") or ""
+                            print(f"   [debug]   iframe[{i}] src='{src[:100]}' name='{name}' id='{iframe_id}'")
+                        except Exception:
+                            pass
+
+                    # Try to find login form — could be on page, in new URL, or in iframe
+                    login_form_found = False
+
+                    # Check if URL changed
+                    if driver.current_url != pre_click_url:
+                        print(f"   [debug] URL changed to: {driver.current_url}")
+                        login_form_found = True
+
+                    # Check for password field on current page (modal/inline form)
+                    if not login_form_found:
+                        try:
+                            pw = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+                            print("   [debug] Found password field on main page")
+                            login_form_found = True
+                        except Exception:
+                            pass
+
+                    # Check inside iframes
+                    if not login_form_found:
+                        for i, iframe in enumerate(iframes):
+                            try:
+                                driver.switch_to.frame(iframe)
+                                pw = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+                                print(f"   [debug] Found password field in iframe[{i}]")
+                                login_form_found = True
+                                # Stay in this iframe context for form filling
+                                break
+                            except Exception:
+                                driver.switch_to.default_content()
+                                continue
+
+                    # If still nothing, wait longer for redirect
+                    if not login_form_found:
+                        print("   [debug] No login form yet, waiting longer...")
+                        try:
+                            WebDriverWait(driver, 15).until(
+                                lambda d: d.current_url != pre_click_url
+                                or len(d.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0
+                            )
+                            print(f"   [debug] Page changed. URL: {driver.current_url}")
+                        except Exception:
+                            print(f"   [debug] Timeout. URL still: {driver.current_url}")
+                            # Dump page for debugging
+                            inputs = driver.find_elements(By.TAG_NAME, "input")
+                            print(f"   [debug] Inputs on page: {len(inputs)}")
+                            for inp in inputs:
+                                try:
+                                    print(f"   [debug]   type={inp.get_attribute('type')} "
+                                          f"name={inp.get_attribute('name')}")
+                                except Exception:
+                                    pass
+                else:
+                    raise RuntimeError("Could not find or click 'Log in' button")
+
+            # Dismiss any cookie banner on the login page
+            time.sleep(1)
+            for consent_text in ["Accept All Cookies", "Accept All", "Accept"]:
+                try:
+                    for b in driver.find_elements(By.TAG_NAME, "button"):
+                        if b.text.strip() == consent_text:
+                            b.click()
+                            print(f"   [debug] Dismissed login page cookie banner")
+                            time.sleep(0.5)
+                            break
+                except Exception:
+                    continue
+
+            # Debug: dump login form elements
+            print(f"   [debug] Page title: {driver.title}")
+            print(f"   [debug] URL: {driver.current_url}")
+            inputs = driver.find_elements(By.TAG_NAME, "input")
+            print(f"   [debug] Found {len(inputs)} <input> elements:")
+            for inp in inputs:
+                try:
+                    print(f"   [debug]   type={inp.get_attribute('type')} "
+                          f"name={inp.get_attribute('name')} "
+                          f"id={inp.get_attribute('id')} "
+                          f"placeholder={inp.get_attribute('placeholder')}")
+                except Exception:
+                    pass
+
+            # Fill email (PL uses name="username" with type="text")
+            email_field = None
+            for sel in [
+                "input#username",
+                "input[name='username']",
+                "input[name='identifier']",
+                "input[type='email']",
+                "input[name='email']",
+                "input#email",
+            ]:
+                try:
+                    email_field = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, sel))
+                    )
+                    print(f"   [debug] Found email field: {sel}")
+                    break
+                except Exception:
+                    continue
+
+            if not email_field:
+                raise RuntimeError("Could not find email field on page")
+
+            email_field.clear()
+            email_field.send_keys(email)
+            print("   [debug] Email entered")
+
+            # Fill password
+            pw_field = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "input#password, input[type='password']"))
+            )
+            pw_field.clear()
+            pw_field.send_keys(password)
+            print("   [debug] Password entered")
+
+            # Click submit
+            submitted = False
+            for sel in [
+                "button[type='submit']",
+                "input[type='submit']",
+            ]:
+                try:
+                    btn = driver.find_element(By.CSS_SELECTOR, sel)
+                    print(f"   [debug] Clicking submit: {sel} (text='{btn.text.strip()}')")
+                    btn.click()
+                    submitted = True
+                    break
+                except Exception:
+                    continue
+
+            if not submitted:
+                # Try finding a button by text content
+                for btn in driver.find_elements(By.TAG_NAME, "button"):
+                    text = btn.text.strip().lower()
+                    if text in ("sign in", "log in", "login"):
+                        print(f"   [debug] Clicking button by text: '{text}'")
+                        btn.click()
+                        submitted = True
+                        break
+
+            if submitted:
+                print("   Auto-login submitted, waiting for redirect...")
+            else:
+                print("   Could not find submit button — please click it manually")
+
+        except Exception as e:
+            print(f"   Auto-login failed, please log in manually")
+            print(f"   [debug] Exception: {type(e).__name__}: {e}")
+            traceback.print_exc()
+
+        # --- End auto-fill ---
+
         print("   (the window will close automatically once you're logged in)")
 
         deadline = time.time() + 180

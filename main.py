@@ -146,6 +146,12 @@ def parse_args():
         default=None,
     )
 
+    parser.add_argument(
+        "--test-login",
+        action="store_true",
+        help="Test the login flow without making any changes",
+    )
+
     return parser.parse_args()
 
 
@@ -907,6 +913,19 @@ async def interactive_auto_mode(
 
 async def main_async(args):
     """Main async function"""
+
+    if args.test_login:
+        print("\n🔄 Testing login flow...")
+        fpl_actions = FPLActions(args.team_id)
+        try:
+            if await fpl_actions.login():
+                print("✓ Login test passed — session is valid")
+            else:
+                print("❌ Login test failed")
+        finally:
+            await fpl_actions.close()
+        return
+
     print("\n🔄 Fetching FPL data...")
 
     # Initialize data fetcher
