@@ -433,6 +433,8 @@ def prompt_free_hit_squad(
     recommender: RecommendationEngine,
     fpl: FPLDataFetcher,
     squad_ids: List[int],
+    ian_squad: Optional[List[int]] = None,
+    ian_captain: Optional[int] = None,
 ) -> tuple:
     """Phase 1-FH: Build and display optimal Free Hit squad.
 
@@ -452,6 +454,76 @@ def prompt_free_hit_squad(
         total_budget = 100.0  # Fallback
 
     print(f"\n  Budget: £{total_budget:.1f}m (current squad value)")
+
+    # Option A: Ian Foster's squad (recommended)
+    if ian_squad and len(ian_squad) == 15:
+        print("\n  --- OPTION A: MIRROR IAN FOSTER (Recommended) ---")
+        print("  Ian Foster (#9) - Most consistent manager, never below #1,248")
+        print()
+        ian_scored = []
+        ian_cost = 0.0
+        for pos in ["GKP", "DEF", "MID", "FWD"]:
+            for pid in ian_squad:
+                p = fpl.get_player(pid)
+                if p and p.position == pos:
+                    sp = recommender.scorer.score_player(p)
+                    ian_scored.append(sp)
+                    ian_cost += p.price
+                    cap_mark = " (C)" if pid == ian_captain else ""
+                    print(f"    {p.position} {p.web_name:15} ({p.team}) £{p.price}m{cap_mark}")
+
+        print(f"\n  Ian's squad cost: £{ian_cost:.1f}m")
+
+        # Check budget feasibility
+        if ian_cost > total_budget + 0.5:
+            print(f"  ⚠️  Ian's squad (£{ian_cost:.1f}m) exceeds your budget (£{total_budget:.1f}m)")
+            print("      May need to substitute a cheaper player")
+        else:
+            print(f"  ✓ Within budget")
+
+        # Calculate transfers needed
+        ian_set = set(ian_squad)
+        current_set = set(squad_ids)
+        transfers_needed = len(ian_set - current_set)
+        print(f"  Transfers: {transfers_needed} changes from your squad")
+
+        print("\n  [i=use Ian's squad, m=see model's squad, s=skip]: ", end="")
+        choice = input().strip().lower()
+
+        if choice == "i":
+            # Use Ian's squad
+            transfers = []
+            for pid in squad_ids:
+                if pid not in ian_set:
+                    out_player = fpl.get_player(pid)
+                    if out_player:
+                        out_sp = recommender.scorer.score_player(out_player)
+                        # Find a corresponding in player
+                        for in_pid in ian_squad:
+                            if in_pid not in current_set:
+                                in_player = fpl.get_player(in_pid)
+                                if in_player and in_player.position == out_player.position:
+                                    in_sp = recommender.scorer.score_player(in_player)
+                                    from output.recommendations import TransferRecommendation
+                                    transfers.append(TransferRecommendation(
+                                        player_out=out_sp,
+                                        player_in=in_sp,
+                                        score_gain=in_sp.overall_score - out_sp.overall_score,
+                                        price_diff=in_player.price - out_player.price,
+                                        reason="Mirror Ian Foster"
+                                    ))
+                                    current_set.add(in_pid)
+                                    break
+
+            print(f"\n  ✓ Using Ian Foster's squad ({len(transfers)} transfers)")
+            return transfers, ian_squad
+
+        if choice == "s":
+            print("  Skipping Free Hit.")
+            return [], squad_ids
+
+        # Fall through to show model's squad
+        print("\n  --- OPTION B: MODEL'S OPTIMAL SQUAD ---")
 
     squad, transfers = recommender.get_free_hit_squad(squad_ids, total_budget)
 
@@ -1034,7 +1106,10 @@ async def interactive_auto_mode(
     # Display model performance summary
     display_model_performance()
 
-    # Show Ian Foster mirror analysis
+    # Show Ian Foster mirror analysis and save for Free Hit option
+    ian_squad = None
+    ian_captain = None
+
     print("\n" + "=" * 60)
     print("  MIRROR REFERENCE: Ian Foster (#9, Most Consistent)")
     print("=" * 60)
@@ -1045,6 +1120,10 @@ async def interactive_auto_mode(
             free_hit_threshold=4,
         )
         if mirror_analysis:
+            # Save Ian's squad for Free Hit option
+            ian_squad = mirror_analysis.target_squad
+            ian_captain = mirror_analysis.target_captain
+
             player_names = {p.id: p.web_name for p in fpl.get_all_players()}
             captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
 
@@ -1128,9 +1207,10 @@ async def interactive_auto_mode(
     chip_to_play = None
 
     if selected_chip == "free_hit":
-        # Phase 1-FH: Free Hit squad builder (locked players shown but can be overridden)
+        # Phase 1-FH: Free Hit squad builder with Ian Foster option
         chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-            recommender, fpl, squad_ids
+            recommender, fpl, squad_ids,
+            ian_squad=ian_squad, ian_captain=ian_captain
         )
         if chosen_transfers:
             # Build a chip_to_play object for review phase
@@ -1140,9 +1220,10 @@ async def interactive_auto_mode(
             selected_chip = None
 
     elif selected_chip == "wildcard":
-        # Wildcard uses same Free Hit flow (rebuild from scratch, but permanent)
+        # Wildcard uses same Free Hit flow with Ian Foster option
         chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-            recommender, fpl, squad_ids
+            recommender, fpl, squad_ids,
+            ian_squad=ian_squad, ian_captain=ian_captain
         )
         if chosen_transfers:
             chip_to_play = selected_chip
