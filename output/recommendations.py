@@ -3,7 +3,7 @@ Recommendation engine - generates transfer, captain, and strategic advice
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from tabulate import tabulate
 
@@ -222,6 +222,7 @@ class RecommendationEngine:
         limit: int = 5,
         min_gain_free: float = 0.5,
         min_gain_hit: float = 1.5,
+        locked_ids: Optional[Set[int]] = None,
     ) -> List[TransferRecommendation]:
         """Generate transfer recommendations respecting all FPL rules"""
         recommendations: List[TransferRecommendation] = []
@@ -252,6 +253,9 @@ class RecommendationEngine:
         # Build candidate list: forced transfers first, then weakest players
         forced_ids = {sp.player.id for sp in forced_out}
         remaining = [sp for sp in current_squad if sp.player.id not in forced_ids]
+        # Exclude locked players from candidates (but forced transfers take precedence)
+        if locked_ids:
+            remaining = [sp for sp in remaining if sp.player.id not in locked_ids]
         candidates = forced_out + remaining[: limit + 3 - len(forced_out)]
         remaining_budget = budget
 
@@ -641,6 +645,7 @@ class RecommendationEngine:
         min_gain_free: float = 0.5,
         min_gain_hit: float = 1.5,
         risk_level: str = "balanced",
+        locked_ids: Optional[Set[int]] = None,
     ) -> List[TransferPlan]:
         """Generate 3 transfer plans: conservative, balanced, aggressive"""
         # Risk multipliers for thresholds
@@ -658,6 +663,7 @@ class RecommendationEngine:
             limit=free_transfers,
             min_gain_free=min_gain_free * risk_mult,
             min_gain_hit=999,  # effectively disallow hits
+            locked_ids=locked_ids,
         )
         cons_gain = sum(t.score_gain for t in conservative)
         plans.append(TransferPlan(
@@ -678,6 +684,7 @@ class RecommendationEngine:
             limit=balanced_limit,
             min_gain_free=min_gain_free * risk_mult,
             min_gain_hit=min_gain_hit * risk_mult,
+            locked_ids=locked_ids,
         )
         bal_hits = max(0, len(balanced) - free_transfers)
         bal_gain = sum(t.score_gain for t in balanced)
@@ -700,6 +707,7 @@ class RecommendationEngine:
             limit=agg_limit,
             min_gain_free=min_gain_free * agg_mult,
             min_gain_hit=min_gain_hit * agg_mult,
+            locked_ids=locked_ids,
         )
         agg_hits = max(0, len(aggressive) - free_transfers)
         agg_gain = sum(t.score_gain for t in aggressive)

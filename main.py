@@ -8,7 +8,7 @@ Generates comprehensive FPL recommendations to help you climb the rankings.
 import argparse
 import asyncio
 import sys
-from typing import List, Optional
+from typing import List, Optional, Set
 
 import config
 from data.fpl_api import FPLDataFetcher
@@ -284,6 +284,83 @@ def prompt_chip(available_chips: List[str]) -> Optional[str]:
 
     print("  No chip selected.")
     return None
+
+
+def prompt_locked_players(
+    fpl: FPLDataFetcher,
+    scorer: PlayerScorer,
+    squad_ids: List[int],
+) -> Set[int]:
+    """Phase 0.75: Let user mark players as non-negotiable (cannot be sold).
+
+    Returns set of locked player IDs.
+    """
+    print("\n" + "=" * 60)
+    print("  PHASE 0.75: LOCK PLAYERS")
+    print("=" * 60)
+
+    # Group players by position
+    positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
+    for pid in squad_ids:
+        player = fpl.get_player(pid)
+        if player:
+            sp = scorer.score_player(player)
+            positions[player.position].append({
+                "id": pid,
+                "player": player,
+                "scored": sp,
+            })
+
+    # Sort each position by score descending
+    for pos in positions:
+        positions[pos].sort(key=lambda x: x["scored"].overall_score, reverse=True)
+
+    # Display with numbers
+    print("\n  Your squad:")
+    numbered = []
+    idx = 1
+    for pos in ["GKP", "DEF", "MID", "FWD"]:
+        if positions[pos]:
+            print(f"\n  {pos}:")
+            for p in positions[pos]:
+                player = p["player"]
+                sp = p["scored"]
+                print(
+                    f"   {idx:2}. {player.web_name:15} ({player.team:3}) "
+                    f"Form: {player.form} | Score: {sp.overall_score:.1f}"
+                )
+                numbered.append(p["id"])
+                idx += 1
+
+    print("\n  Lock players you don't want to sell.")
+    choice = input("  [Enter=none, e.g. 1,3,5]: ").strip()
+
+    if not choice:
+        print("  No players locked.")
+        return set()
+
+    locked_ids: Set[int] = set()
+    parts = choice.replace(" ", "").split(",")
+    for part in parts:
+        try:
+            num = int(part)
+            if 1 <= num <= len(numbered):
+                pid = numbered[num - 1]
+                locked_ids.add(pid)
+                player = fpl.get_player(pid)
+                if player:
+                    print(f"  Locked: {player.web_name}")
+            else:
+                print(f"  Invalid number: {num}")
+        except ValueError:
+            print(f"  Invalid input: {part}")
+
+    if locked_ids:
+        print(f"\n  {len(locked_ids)} player(s) locked.")
+    else:
+        print("  No players locked.")
+
+    return locked_ids
 
 
 def prompt_free_hit_squad(
@@ -844,12 +921,15 @@ async def interactive_auto_mode(
     # Phase 0.5: Chip selection
     selected_chip = prompt_chip(available_chips)
 
+    # Phase 0.75: Lock non-negotiable players
+    locked_ids = prompt_locked_players(fpl, recommender.scorer, squad_ids)
+
     # Determine flow based on chip
     captain_squad_ids = squad_ids  # IDs used for captain picks
     chip_to_play = None
 
     if selected_chip == "free_hit":
-        # Phase 1-FH: Free Hit squad builder
+        # Phase 1-FH: Free Hit squad builder (locked players shown but can be overridden)
         chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
             recommender, fpl, squad_ids
         )
@@ -875,7 +955,7 @@ async def interactive_auto_mode(
         if selected_chip in ("triple_captain", "bench_boost"):
             chip_to_play = selected_chip
 
-        # Generate transfer plans
+        # Generate transfer plans (locked players excluded from candidates)
         plans = recommender.get_transfer_plans(
             squad_ids,
             free_transfers=1,
@@ -883,6 +963,7 @@ async def interactive_auto_mode(
             min_gain_free=settings["min_gain_free"],
             min_gain_hit=settings["min_gain_hit"],
             risk_level=settings["risk"],
+            locked_ids=locked_ids,
         )
 
         # Phase 1: Transfer plan
