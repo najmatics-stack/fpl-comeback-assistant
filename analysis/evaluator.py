@@ -158,6 +158,14 @@ class ModelEvaluator:
         else:
             ownership_score = 0.0
 
+        # Recent points score (hot hand) - use last GW before target
+        last_gw_pts = 0
+        if pre_gw:
+            last_gw_pts = pre_gw[-1].get("total_points", 0)
+        recent_pts_score = min(10, last_gw_pts / 1.5)
+        # Blend with form
+        recent_points_score = recent_pts_score * 0.7 + form_score * 0.3
+
         # Return factor set matching position weights
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
         if pos_weights:
@@ -171,6 +179,7 @@ class ModelEvaluator:
                 "value_score": value_score,
                 "minutes_security": minutes_score,
                 "ownership": ownership_score,
+                "recent_points": recent_points_score,
             }
         else:
             total_ict = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)

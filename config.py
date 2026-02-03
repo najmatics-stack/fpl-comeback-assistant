@@ -19,49 +19,53 @@ SCORING_WEIGHTS = {
 }
 
 # Position-specific weight profiles for the enhanced scoring model
-# Each position emphasizes different factors; keys match scoring methods in PlayerScorer
-# Tuned via correlation analysis over GW15-23 (50/50 blend of prior + correlation-proportional)
-# Key changes: value_score up (strongest signal), fixture_ease down (weakest signal)
-# Added ownership factor - wisdom of crowds signal (0.317 correlation in backtest)
+# Optimized for PREDICTION ACCURACY (rank correlation with actual points)
+# Key insight: ownership (0.390) and value_score (0.369) are strongest signals
+# Weak signals fixture_ease (0.098) and xgi_per_90 (0.086) heavily reduced
+# Added recent_points for "hot hand" effect
 POSITION_WEIGHTS = {
     "GKP": {
-        "ep_next": 0.18,
-        "form": 0.13,
-        "fixture_ease": 0.08,
-        "defensive": 0.18,
-        "value_score": 0.16,
-        "minutes_security": 0.15,
-        "ownership": 0.12,  # Wisdom of crowds
+        "ep_next": 0.15,
+        "form": 0.10,
+        "fixture_ease": 0.04,  # Weak signal - minimized
+        "defensive": 0.16,
+        "value_score": 0.18,  # Strong signal
+        "minutes_security": 0.12,
+        "ownership": 0.15,  # Strongest signal
+        "recent_points": 0.10,  # Hot hand
     },
     "DEF": {
-        "ep_next": 0.18,
-        "form": 0.13,
-        "xgi_per_90": 0.10,
-        "fixture_ease": 0.08,
-        "defensive": 0.13,
-        "value_score": 0.16,
-        "minutes_security": 0.10,
-        "ownership": 0.12,  # Wisdom of crowds
+        "ep_next": 0.15,
+        "form": 0.10,
+        "xgi_per_90": 0.04,  # Weak signal - minimized
+        "fixture_ease": 0.04,  # Weak signal - minimized
+        "defensive": 0.12,
+        "value_score": 0.18,  # Strong signal
+        "minutes_security": 0.08,
+        "ownership": 0.17,  # Strongest signal
+        "recent_points": 0.12,  # Hot hand
     },
     "MID": {
-        "ep_next": 0.18,
-        "form": 0.13,
-        "xgi_per_90": 0.10,
-        "fixture_ease": 0.08,
-        "ict_position": 0.11,
-        "value_score": 0.16,
-        "minutes_security": 0.10,
-        "ownership": 0.14,  # Higher for mids - template picks matter more
+        "ep_next": 0.14,
+        "form": 0.10,
+        "xgi_per_90": 0.04,  # Weak signal - minimized
+        "fixture_ease": 0.04,  # Weak signal - minimized
+        "ict_position": 0.08,
+        "value_score": 0.18,  # Strong signal
+        "minutes_security": 0.08,
+        "ownership": 0.18,  # Strongest signal - template mids matter
+        "recent_points": 0.16,  # Hot hand - crucial for mids
     },
     "FWD": {
-        "ep_next": 0.18,
-        "form": 0.13,
-        "xgi_per_90": 0.10,
-        "fixture_ease": 0.08,
-        "ict_position": 0.11,
-        "value_score": 0.16,
-        "minutes_security": 0.10,
-        "ownership": 0.14,  # Higher for fwds - Haaland/Salah effect
+        "ep_next": 0.14,
+        "form": 0.10,
+        "xgi_per_90": 0.04,  # Weak signal - minimized
+        "fixture_ease": 0.04,  # Weak signal - minimized
+        "ict_position": 0.08,
+        "value_score": 0.18,  # Strong signal
+        "minutes_security": 0.08,
+        "ownership": 0.18,  # Strongest signal - Haaland effect
+        "recent_points": 0.16,  # Hot hand - crucial for fwds
     },
 }
 
@@ -72,8 +76,9 @@ XGI_POSITION_MULTIPLIERS = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}
 # Softened decay for better multi-week planning
 FIXTURE_DECAY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.45]
 
-# Team form interaction weight (how much team form affects fixture scores)
-TEAM_FORM_INTERACTION_WEIGHT = 0.15
+# Interaction term weights (bonuses for multiplicative effects)
+TEAM_FORM_INTERACTION_WEIGHT = 0.15  # Team form × fixture ease
+OWNERSHIP_FORM_INTERACTION_WEIGHT = 0.25  # Ownership × form (popular + hot = delivers)
 
 # Differential thresholds
 DIFFERENTIAL_MAX_OWNERSHIP = 10.0  # Players owned by less than 10%

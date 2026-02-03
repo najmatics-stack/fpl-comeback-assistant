@@ -22,14 +22,15 @@
   },
   "23": {
     "weights": {
-      "ep_next": 0.1672,
-      "form": 0.1322,
-      "xgi_per_90": 0.0827,
-      "fixture_ease": 0.0706,
-      "ict_position": 0.1172,
-      "value_score": 0.1666,
-      "minutes_security": 0.1077,
-      "ownership": 0.1558
+      "ep_next": 0.1331,
+      "form": 0.1051,
+      "xgi_per_90": 0.0389,
+      "fixture_ease": 0.0404,
+      "ict_position": 0.0903,
+      "value_score": 0.1726,
+      "minutes_security": 0.0881,
+      "ownership": 0.1753,
+      "recent_points": 0.1561
     },
     "correlations": {
       "ep_next": 0.2778520320211585,
@@ -39,8 +40,9 @@
       "ict_position": 0.27129540856888723,
       "value_score": 0.36866365976338344,
       "minutes_security": 0.2542535087097866,
-      "ownership": 0.3902730614526019
+      "ownership": 0.3902730614526019,
+      "recent_points": 0.34873103958564555
     },
-    "overall_correlation": 0.3715759479223243
+    "overall_correlation": 0.3892437874387009
   }
 }

@@ -58,6 +58,8 @@ class ScoredPlayer:
     availability_multiplier: float = 1.0
     form_fixture_interaction: float = 0.0  # Team form × fixture ease interaction
     ownership_score: float = 0.0  # Global ownership wisdom-of-crowds signal
+    recent_points_score: float = 0.0  # Last GW actual points (hot hand)
+    ownership_form_interaction: float = 0.0  # Popular + in-form = delivers
 
 
 def load_tuned_weights() -> Optional[Dict[str, float]]:
@@ -300,6 +302,34 @@ class PlayerScorer:
 
         return interaction
 
+    def _calculate_ownership_form_interaction(self, player: Player) -> float:
+        """Calculate ownership × form interaction (0-3).
+        Hot players that many people own tend to deliver consistently.
+        This captures the 'template captain' effect."""
+        ownership_norm = min(1.0, player.selected_by_percent / 50.0)  # 50% = max
+        form_norm = min(1.0, player.form / 8.0)  # 8.0 form = elite
+
+        # Interaction: popular + in-form = reliable points
+        interaction = ownership_norm * form_norm * 3.0
+
+        return interaction
+
+    def _calculate_recent_points_score(self, player: Player) -> float:
+        """Calculate recent actual points score (0-10).
+        Uses event_points (last GW) as a 'hot hand' indicator.
+        Players who just scored big often continue form."""
+        # event_points is last GW actual points
+        last_gw_pts = player.event_points
+
+        # Scale: 15+ pts = 10, 10 pts = 6.7, 5 pts = 3.3, 0 = 0
+        score = min(10, last_gw_pts / 1.5)
+
+        # Blend with form for stability (70% recent, 30% form)
+        form_component = min(10, player.form * 1.2)
+        blended = score * 0.7 + form_component * 0.3
+
+        return min(10, blended)
+
     def _calculate_ict_position_score(self, player: Player) -> float:
         """Calculate position-decomposed ICT score (0-10).
         FWD: threat-heavy, MID: creativity+threat, DEF: influence-heavy."""
@@ -352,6 +382,8 @@ class PlayerScorer:
         availability_mult = self._calculate_availability_multiplier(player)
         form_fixture_interaction = self._calculate_form_fixture_interaction(player)
         ownership_score = self._calculate_ownership_score(player)
+        recent_points_score = self._calculate_recent_points_score(player)
+        ownership_form_interaction = self._calculate_ownership_form_interaction(player)
 
         # Weight priority: 1) tuned weights from evaluator, 2) position-specific, 3) legacy
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
@@ -367,6 +399,7 @@ class PlayerScorer:
             "value_score": value_score,
             "minutes_security": minutes_score,
             "ownership": ownership_score,  # Wisdom of crowds signal
+            "recent_points": recent_points_score,  # Hot hand indicator
         }
 
         # Select weights: tuned > position-specific > legacy
@@ -398,14 +431,16 @@ class PlayerScorer:
             }
             weights = self.weights
 
-        # Calculate interaction weight from config (default 0.15)
+        # Calculate interaction weights from config
         interaction_weight = getattr(config, "TEAM_FORM_INTERACTION_WEIGHT", 0.15)
+        ownership_form_weight = getattr(config, "OWNERSHIP_FORM_INTERACTION_WEIGHT", 0.20)
 
         bonuses = {
             "set_piece": self._calculate_set_piece_bonus(player),
             "bonus_magnet": self._calculate_bonus_magnet_score(player),
             "transfer_momentum": transfer_momentum,
             "form_fixture_interaction": form_fixture_interaction * interaction_weight,
+            "ownership_form_interaction": ownership_form_interaction * ownership_form_weight,
         }
 
         overall_score = compute_weighted_score(factors, weights, bonuses)
@@ -438,6 +473,8 @@ class PlayerScorer:
             availability_multiplier=availability_mult,
             form_fixture_interaction=form_fixture_interaction,
             ownership_score=ownership_score,
+            recent_points_score=recent_points_score,
+            ownership_form_interaction=ownership_form_interaction,
         )
 
     def get_top_players(
