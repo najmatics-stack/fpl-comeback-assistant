@@ -22,41 +22,46 @@ SCORING_WEIGHTS = {
 # Each position emphasizes different factors; keys match scoring methods in PlayerScorer
 # Tuned via correlation analysis over GW15-23 (50/50 blend of prior + correlation-proportional)
 # Key changes: value_score up (strongest signal), fixture_ease down (weakest signal)
+# Added ownership factor - wisdom of crowds signal (0.317 correlation in backtest)
 POSITION_WEIGHTS = {
     "GKP": {
-        "ep_next": 0.20,
-        "form": 0.15,
-        "fixture_ease": 0.10,
-        "defensive": 0.20,
-        "value_score": 0.18,
-        "minutes_security": 0.17,
+        "ep_next": 0.18,
+        "form": 0.13,
+        "fixture_ease": 0.08,
+        "defensive": 0.18,
+        "value_score": 0.16,
+        "minutes_security": 0.15,
+        "ownership": 0.12,  # Wisdom of crowds
     },
     "DEF": {
-        "ep_next": 0.20,
-        "form": 0.15,
-        "xgi_per_90": 0.12,
-        "fixture_ease": 0.10,
-        "defensive": 0.15,
-        "value_score": 0.18,
+        "ep_next": 0.18,
+        "form": 0.13,
+        "xgi_per_90": 0.10,
+        "fixture_ease": 0.08,
+        "defensive": 0.13,
+        "value_score": 0.16,
         "minutes_security": 0.10,
+        "ownership": 0.12,  # Wisdom of crowds
     },
     "MID": {
-        "ep_next": 0.20,
-        "form": 0.15,
-        "xgi_per_90": 0.12,
-        "fixture_ease": 0.10,
-        "ict_position": 0.13,
-        "value_score": 0.18,
-        "minutes_security": 0.12,
+        "ep_next": 0.18,
+        "form": 0.13,
+        "xgi_per_90": 0.10,
+        "fixture_ease": 0.08,
+        "ict_position": 0.11,
+        "value_score": 0.16,
+        "minutes_security": 0.10,
+        "ownership": 0.14,  # Higher for mids - template picks matter more
     },
     "FWD": {
-        "ep_next": 0.20,
-        "form": 0.15,
-        "xgi_per_90": 0.12,
-        "fixture_ease": 0.10,
-        "ict_position": 0.13,
-        "value_score": 0.18,
-        "minutes_security": 0.12,
+        "ep_next": 0.18,
+        "form": 0.13,
+        "xgi_per_90": 0.10,
+        "fixture_ease": 0.08,
+        "ict_position": 0.11,
+        "value_score": 0.16,
+        "minutes_security": 0.10,
+        "ownership": 0.14,  # Higher for fwds - Haaland/Salah effect
     },
 }
 

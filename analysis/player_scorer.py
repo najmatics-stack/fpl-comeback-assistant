@@ -57,6 +57,7 @@ class ScoredPlayer:
     transfer_momentum: float = 0.0
     availability_multiplier: float = 1.0
     form_fixture_interaction: float = 0.0  # Team form × fixture ease interaction
+    ownership_score: float = 0.0  # Global ownership wisdom-of-crowds signal
 
 
 def load_tuned_weights() -> Optional[Dict[str, float]]:
@@ -253,6 +254,30 @@ class PlayerScorer:
         pos_mult = {"FWD": 1.5, "MID": 1.2, "DEF": 0.8, "GKP": 0.5}.get(player.position, 1.0)
         return base * pos_mult
 
+    def _calculate_ownership_score(self, player: Player) -> float:
+        """Calculate ownership score (0-10). Wisdom of crowds signal.
+
+        High ownership = many managers believe in this player.
+        This is a strong baseline signal that captures collective intelligence.
+
+        The league spy system then exploits discrepancies between global
+        ownership and league-specific ownership for differential gains.
+        """
+        # Ownership typically ranges 0-60% for most players
+        # Top owned players: 50-60%, template players: 20-40%, differentials: <10%
+        ownership = player.selected_by_percent
+
+        # Log-scale to avoid over-weighting mega-owned players
+        # 50% ownership -> ~8.5 score, 20% -> ~6.5, 5% -> ~3.5, 1% -> ~0
+        if ownership <= 0:
+            return 0.0
+
+        import math
+        # Log scale: log(50)/log(60)*10 ≈ 9.5 for 50% ownership
+        score = math.log(ownership + 1) / math.log(61) * 10
+
+        return min(10, max(0, score))
+
     def _calculate_form_fixture_interaction(self, player: Player) -> float:
         """Calculate team form × fixture ease interaction (0-3).
         Strong teams with easy fixtures should score higher than the sum of parts.
@@ -326,6 +351,7 @@ class PlayerScorer:
         ict_position_score = self._calculate_ict_position_score(player)
         availability_mult = self._calculate_availability_multiplier(player)
         form_fixture_interaction = self._calculate_form_fixture_interaction(player)
+        ownership_score = self._calculate_ownership_score(player)
 
         # Weight priority: 1) tuned weights from evaluator, 2) position-specific, 3) legacy
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
@@ -340,6 +366,7 @@ class PlayerScorer:
             "ict_position": ict_position_score,
             "value_score": value_score,
             "minutes_security": minutes_score,
+            "ownership": ownership_score,  # Wisdom of crowds signal
         }
 
         # Select weights: tuned > position-specific > legacy
@@ -410,6 +437,7 @@ class PlayerScorer:
             transfer_momentum=transfer_momentum,
             availability_multiplier=availability_mult,
             form_fixture_interaction=form_fixture_interaction,
+            ownership_score=ownership_score,
         )
 
     def get_top_players(

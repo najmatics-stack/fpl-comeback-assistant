@@ -1,0 +1,46 @@
+{
+  "22": {
+    "weights": {
+      "ep_next": 0.1913,
+      "form": 0.1354,
+      "xgi_per_90": 0.134,
+      "fixture_ease": 0.1549,
+      "ict_position": 0.1204,
+      "value_score": 0.145,
+      "minutes_security": 0.119
+    },
+    "correlations": {
+      "ep_next": 0.2845801899915892,
+      "form": 0.28463406436298777,
+      "xgi_per_90": 0.04460170757634485,
+      "fixture_ease": 0.15990122495846848,
+      "ict_position": 0.27920143707875467,
+      "value_score": 0.3381592976711798,
+      "minutes_security": 0.2716524315031593
+    },
+    "overall_correlation": 0.3339670674812686
+  },
+  "23": {
+    "weights": {
+      "ep_next": 0.1672,
+      "form": 0.1322,
+      "xgi_per_90": 0.0827,
+      "fixture_ease": 0.0706,
+      "ict_position": 0.1172,
+      "value_score": 0.1666,
+      "minutes_security": 0.1077,
+      "ownership": 0.1558
+    },
+    "correlations": {
+      "ep_next": 0.2778520320211585,
+      "form": 0.27799182940940326,
+      "xgi_per_90": 0.08587511118457825,
+      "fixture_ease": 0.09842916853614192,
+      "ict_position": 0.27129540856888723,
+      "value_score": 0.36866365976338344,
+      "minutes_security": 0.2542535087097866,
+      "ownership": 0.3902730614526019
+    },
+    "overall_correlation": 0.3715759479223243
+  }
+}

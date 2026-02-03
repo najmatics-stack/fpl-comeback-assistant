@@ -149,6 +149,15 @@ class ModelEvaluator:
             ict_pos_raw = influence_pg * 0.8 + creativity_pg * 0.1 + threat_pg * 0.1
         ict_position_score = min(10, ict_pos_raw / 5)
 
+        # Ownership score (wisdom of crowds)
+        import math
+        ownership = player.selected_by_percent
+        if ownership > 0:
+            ownership_score = math.log(ownership + 1) / math.log(61) * 10
+            ownership_score = min(10, max(0, ownership_score))
+        else:
+            ownership_score = 0.0
+
         # Return factor set matching position weights
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
         if pos_weights:
@@ -161,6 +170,7 @@ class ModelEvaluator:
                 "ict_position": ict_position_score,
                 "value_score": value_score,
                 "minutes_security": minutes_score,
+                "ownership": ownership_score,
             }
         else:
             total_ict = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
