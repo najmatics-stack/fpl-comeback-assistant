@@ -47,28 +47,82 @@
   },
   "23-7gw": {
     "weights": {
-      "ep_next": 0.1353,
-      "form": 0.1142,
-      "xgi_per_90": 0.0318,
-      "fixture_ease": 0.019,
-      "ict_position": 0.1008,
-      "value_score": 0.1652,
-      "minutes_security": 0.0944,
-      "ownership": 0.1761,
-      "recent_points": 0.1633
+      "ep_next": 0.1064,
+      "form": 0.1064,
+      "xgi_per_90": 0.0315,
+      "fixture_ease": 0.1095,
+      "ict_position": 0.093,
+      "value_score": 0.1501,
+      "minutes_security": 0.0867,
+      "ownership": 0.1681,
+      "recent_points": 0.1483
     },
     "correlations": {
-      "ep_next": 0.22377623723891182,
-      "form": 0.22350939068988795,
-      "xgi_per_90": 0.06462391021773928,
-      "fixture_ease": -0.03010196478374283,
-      "ict_position": 0.22722376232416963,
-      "value_score": 0.27723537798189923,
-      "minutes_security": 0.18834222134683942,
-      "ownership": 0.30089923037648303,
-      "recent_points": 0.26629633347539705
+      "ep_next": 0.22366780322700408,
+      "form": 0.22340096756999928,
+      "xgi_per_90": 0.06462841555295529,
+      "fixture_ease": 0.07077590188725558,
+      "ict_position": 0.22726595850165687,
+      "value_score": 0.2772422354981716,
+      "minutes_security": 0.1884550869252879,
+      "ownership": 0.30181692507720237,
+      "recent_points": 0.26622525413844034
     },
-    "overall_correlation": 0.29432741622368463,
+    "overall_correlation": 0.29814459713213903,
     "window": 7
+  },
+  "23-10gw": {
+    "weights": {
+      "ep_next": 0.1074,
+      "form": 0.1074,
+      "xgi_per_90": 0.0316,
+      "fixture_ease": 0.112,
+      "ict_position": 0.093,
+      "value_score": 0.1457,
+      "minutes_security": 0.0892,
+      "ownership": 0.1673,
+      "recent_points": 0.1464
+    },
+    "correlations": {
+      "ep_next": 0.24020233691976245,
+      "form": 0.23997633731237,
+      "xgi_per_90": 0.06787987087085035,
+      "fixture_ease": 0.08954250937304542,
+      "ict_position": 0.23730590863657453,
+      "value_score": 0.2610622478839485,
+      "minutes_security": 0.21268003024287851,
+      "ownership": 0.31002821558005467,
+      "recent_points": 0.2656735624087111
+    },
+    "overall_correlation": 0.30774860518713243,
+    "ownership_baseline": 0.31002821558005467,
+    "window": 10
+  },
+  "23-20gw": {
+    "weights": {
+      "ep_next": 0.0761,
+      "form": 0.1111,
+      "xgi_per_90": 0.0216,
+      "fixture_ease": 0.0384,
+      "ict_position": 0.0593,
+      "value_score": 0.0565,
+      "minutes_security": 0.0766,
+      "ownership": 0.4337,
+      "recent_points": 0.1268
+    },
+    "correlations": {
+      "ep_next": 0.2752397040618826,
+      "form": 0.27485060932872807,
+      "xgi_per_90": 0.05063393769037661,
+      "fixture_ease": 0.11656809634723864,
+      "ict_position": 0.2564963484556988,
+      "value_score": 0.1436343255388569,
+      "minutes_security": 0.2781769621064193,
+      "ownership": 0.3259126825349372,
+      "recent_points": 0.28636573026578793
+    },
+    "overall_correlation": 0.3430387811138892,
+    "ownership_baseline": 0.3259126825349372,
+    "window": 20
   }
 }

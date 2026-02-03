@@ -10,6 +10,11 @@ import asyncio
 import sys
 from typing import List, Optional, Set
 
+# Version and model info
+VERSION = "1.0.0"
+MODEL_NAME = "ians-model"
+MODEL_DESCRIPTION = "Pure ownership (0.283 corr) + Mirror Ian Foster (#9, most consistent manager)"
+
 import config
 from data.fpl_api import FPLDataFetcher
 from data.fpl_actions import FPLActions
@@ -22,6 +27,7 @@ from analysis.backtester import Backtester
 from analysis.evaluator import ModelEvaluator
 from analysis.comparative_backtest import ComparativeBacktester
 from analysis.league_spy import LeagueSpy
+from analysis.mirror_manager import analyze_mirror, format_mirror_analysis, get_ian_weekly_moves, MIRROR_MANAGER_NAME
 from output.recommendations import RecommendationEngine, TransferPlan, TransferRecommendation, CaptainPick
 
 
@@ -134,6 +140,13 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--league-eval",
+        type=int,
+        metavar="GW",
+        help="Evaluate your league's correlation vs model (specify end GW, uses --window)",
+    )
+
+    parser.add_argument(
         "--compare",
         type=str,
         metavar="GW_LIST",
@@ -158,6 +171,19 @@ def parse_args():
         "--test-login",
         action="store_true",
         help="Test the login flow without making any changes",
+    )
+
+    parser.add_argument(
+        "--mirror",
+        action="store_true",
+        help="Mirror Ian Foster (#9, most consistent manager) - shows transfers to match his squad",
+    )
+
+    parser.add_argument(
+        "--mirror-threshold",
+        type=int,
+        default=4,
+        help="Number of transfers above which to recommend Free Hit (default: 4)",
     )
 
     return parser.parse_args()
@@ -942,6 +968,56 @@ async def prompt_review_and_execute(
         await fpl_actions.close()
 
 
+def display_model_performance():
+    """Display model vs ownership baseline from latest evaluation."""
+    from analysis.evaluator import WEIGHTS_FILE
+    import json
+
+    if not WEIGHTS_FILE.exists():
+        return
+
+    try:
+        with open(WEIGHTS_FILE) as f:
+            history = json.load(f)
+
+        if not history:
+            return
+
+        # Find the best entry: prefer multi-GW (higher window), then latest GW
+        def sort_key(key: str):
+            window = history[key].get("window", 1)
+            if "-" in key:
+                gw = int(key.split("-")[0])
+            else:
+                gw = int(key)
+            return (window, gw)  # Higher window first, then higher GW
+
+        latest_key = max(history.keys(), key=sort_key)
+        entry = history[latest_key]
+
+        model_corr = entry.get("overall_correlation", 0)
+        ownership_corr = entry.get("correlations", {}).get("ownership", 0)
+        # Try new field first, fall back to correlations.ownership
+        ownership_baseline = entry.get("ownership_baseline", ownership_corr)
+        window = entry.get("window", 1)
+
+        if model_corr and ownership_baseline:
+            advantage = model_corr - ownership_baseline
+            pct = (advantage / ownership_baseline * 100) if ownership_baseline > 0 else 0
+
+            window_label = f"{window}-week" if window > 1 else "single-GW"
+            print(f"\n📊 Model Performance ({window_label} evaluation):")
+            print(f"   Our Model:      {model_corr:.3f} correlation")
+            print(f"   Ownership Only: {ownership_baseline:.3f} correlation")
+            if advantage >= 0:
+                print(f"   Advantage:      +{advantage:.3f} ({pct:+.1f}% better)")
+            else:
+                print(f"   Advantage:      {advantage:.3f} ({pct:.1f}% worse)")
+
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        pass
+
+
 async def interactive_auto_mode(
     recommender: RecommendationEngine,
     fpl: FPLDataFetcher,
@@ -954,6 +1030,53 @@ async def interactive_auto_mode(
     print("\n" + "=" * 60)
     print("  AUTO-PILOT MODE (Interactive)")
     print("=" * 60)
+
+    # Display model performance summary
+    display_model_performance()
+
+    # Show Ian Foster mirror analysis
+    print("\n" + "=" * 60)
+    print("  MIRROR REFERENCE: Ian Foster (#9, Most Consistent)")
+    print("=" * 60)
+    try:
+        mirror_analysis = await analyze_mirror(
+            your_squad=squad_ids,
+            current_gw=current_gw,
+            free_hit_threshold=4,
+        )
+        if mirror_analysis:
+            player_names = {p.id: p.web_name for p in fpl.get_all_players()}
+            captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
+
+            print(f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}")
+            print(f"  Transfers to match: {mirror_analysis.transfers_needed}")
+
+            if mirror_analysis.transfers_needed > 0:
+                print(f"\n  Quick diff:")
+                for pid in mirror_analysis.players_to_sell[:3]:
+                    name = player_names.get(pid, f"ID:{pid}")
+                    print(f"    OUT: {name}")
+                if mirror_analysis.transfers_needed > 3:
+                    print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
+                for pid in mirror_analysis.players_to_buy[:3]:
+                    name = player_names.get(pid, f"ID:{pid}")
+                    print(f"    IN:  {name}")
+                if mirror_analysis.transfers_needed > 3:
+                    print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
+
+            if mirror_analysis.recommend_free_hit:
+                print(f"\n  ⚠️  Consider FREE HIT to mirror Ian ({mirror_analysis.transfers_needed} transfers)")
+
+            print(f"\n  Ian's captain: {captain_name}")
+
+            # Show Ian's moves this week
+            moves = await get_ian_weekly_moves(current_gw)
+            if moves and moves['transfers_in']:
+                print(f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}")
+
+            print(f"\n  (Run --mirror for full analysis)")
+    except Exception as e:
+        print(f"  Could not fetch mirror data: {e}")
 
     # Pre-phase: Login and fetch REAL current squad
     # The public API shows the squad at the last GW deadline, but we need
@@ -1083,6 +1206,13 @@ async def main_async(args):
             await fpl_actions.close()
         return
 
+    # Print version and model info
+    print(f"\n{'='*60}")
+    print(f"  FPL Comeback Assistant v{VERSION}")
+    print(f"  Model: {MODEL_NAME}")
+    print(f"  {MODEL_DESCRIPTION}")
+    print(f"{'='*60}")
+
     print("\n🔄 Fetching FPL data...")
 
     # Initialize data fetcher
@@ -1154,11 +1284,79 @@ async def main_async(args):
         league_intel=league_intel,
     )
 
+    # Mirror mode - copy Ian Foster's squad
+    if args.mirror:
+        if not squad_ids:
+            print("❌ --team-id required for mirror mode")
+            return
+
+        analysis = await analyze_mirror(
+            your_squad=squad_ids,
+            current_gw=current_gw,
+            free_hit_threshold=args.mirror_threshold,
+        )
+
+        if analysis:
+            # Build player names map
+            player_names = {p.id: p.web_name for p in fpl.get_all_players()}
+            print(format_mirror_analysis(analysis, player_names))
+
+            # Show Ian's weekly moves
+            print("  IAN'S MOVES THIS GAMEWEEK:")
+            moves = await get_ian_weekly_moves(current_gw)
+            if moves:
+                if moves['transfers_in']:
+                    print("    Transfers IN:")
+                    for pid in moves['transfers_in']:
+                        name = player_names.get(pid, f"Player {pid}")
+                        print(f"      + {name}")
+                    print("    Transfers OUT:")
+                    for pid in moves['transfers_out']:
+                        name = player_names.get(pid, f"Player {pid}")
+                        print(f"      - {name}")
+                else:
+                    print("    No transfers made")
+
+                if moves['chip']:
+                    print(f"    Chip: {moves['chip'].upper()}")
+            print()
+        return
+
     # Generate and display recommendations
     if args.evaluate:
         evaluator = ModelEvaluator(fpl)
         result = await evaluator.evaluate_and_save(args.evaluate, window=args.window)
         print(evaluator.format_result(result, window=args.window))
+        return
+
+    if args.league_eval:
+        from analysis.evaluator import LeagueEvaluator, WEIGHTS_FILE
+        import json
+
+        if not args.team_id:
+            print("❌ --team-id required for league evaluation")
+            return
+
+        # Build GW range
+        gw_range = list(range(args.league_eval - args.window + 1, args.league_eval + 1))
+
+        league_eval = LeagueEvaluator(fpl, args.team_id)
+        result = await league_eval.evaluate_league(gw_range)
+
+        # Get model correlation for comparison
+        model_corr = 0.0
+        ownership_corr = 0.0
+        if WEIGHTS_FILE.exists():
+            with open(WEIGHTS_FILE) as f:
+                history = json.load(f)
+            if history:
+                # Find matching window entry
+                key = f"{args.league_eval}-{args.window}gw" if args.window > 1 else str(args.league_eval)
+                if key in history:
+                    model_corr = history[key].get("overall_correlation", 0)
+                    ownership_corr = history[key].get("correlations", {}).get("ownership", 0)
+
+        print(league_eval.format_league_result(result, model_corr, ownership_corr))
         return
 
     if args.compare:

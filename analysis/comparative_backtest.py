@@ -154,6 +154,14 @@ class ComparativeBacktester:
         # Use position-specific weights (matches live model)
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
 
+        # Ownership score (LINEAR scaling to match pure ownership baseline)
+        ownership_score = player.selected_by_percent / 6.0  # 60% = 10.0
+        ownership_score = min(10, max(0, ownership_score))
+
+        # Recent points (hot hand indicator)
+        recent_pts = pre_gw[-1]["total_points"] if pre_gw else 0
+        recent_points_score = min(10, recent_pts / 1.5)
+
         if pos_weights:
             factors = {
                 "ep_next": ep_next_score,
@@ -164,6 +172,8 @@ class ComparativeBacktester:
                 "ict_position": ict_position_score,
                 "value_score": value,
                 "minutes_security": minutes,
+                "ownership": ownership_score,  # CRITICAL: was missing!
+                "recent_points": recent_points_score,
             }
             weights = pos_weights
         else:
@@ -179,10 +189,15 @@ class ComparativeBacktester:
             }
             weights = config.SCORING_WEIGHTS
 
-        bonuses = {
-            "bonus_magnet": min(1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5),
-            "transfer_momentum": max(0, min(2.0, pre_gw[-1].get("transfers_balance", 0) / 50000)),
-        }
+        # Check for pure ownership mode
+        pure_ownership_mode = getattr(config, "PURE_OWNERSHIP_MODE", False)
+        if pure_ownership_mode:
+            bonuses = {}
+        else:
+            bonuses = {
+                "bonus_magnet": min(1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5),
+                "transfer_momentum": max(0, min(2.0, pre_gw[-1].get("transfers_balance", 0) / 50000)),
+            }
 
         return compute_weighted_score(factors, weights, bonuses)
 
