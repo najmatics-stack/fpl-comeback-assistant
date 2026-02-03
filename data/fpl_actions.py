@@ -426,6 +426,49 @@ def _prompt_and_save_credentials() -> Tuple[str, str]:
 
 # --- Selenium browser login ---
 
+def _dismiss_chrome_popups(driver) -> None:
+    """Dismiss Chrome popups like password breach warnings, save password, etc."""
+    from selenium.webdriver.common.by import By
+
+    try:
+        # Try to dismiss any JavaScript alerts
+        try:
+            alert = driver.switch_to.alert
+            alert.dismiss()
+            print("   [debug] Dismissed JS alert")
+        except Exception:
+            pass  # No alert present
+
+        # Look for common popup dismiss buttons
+        dismiss_texts = [
+            "ok", "close", "dismiss", "got it", "not now",
+            "no thanks", "never", "cancel", "skip"
+        ]
+
+        for btn in driver.find_elements(By.TAG_NAME, "button"):
+            try:
+                text = btn.text.strip().lower()
+                if text in dismiss_texts:
+                    btn.click()
+                    print(f"   [debug] Clicked popup button: '{text}'")
+                    return
+            except Exception:
+                continue
+
+        # Also check for popup close buttons (X icons, etc.)
+        for selector in ["[aria-label='Close']", ".close", ".dismiss", "[data-dismiss]"]:
+            try:
+                close_btn = driver.find_element(By.CSS_SELECTOR, selector)
+                close_btn.click()
+                print(f"   [debug] Clicked close button: {selector}")
+                return
+            except Exception:
+                continue
+
+    except Exception:
+        pass  # Ignore errors in popup dismissal
+
+
 def _selenium_login() -> Optional[Dict[str, str]]:
     """Open Chrome, let user log in, capture cookies + localStorage tokens"""
     try:
@@ -439,6 +482,14 @@ def _selenium_login() -> Optional[Dict[str, str]]:
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
+
+    # Disable password manager popups (breach warnings, save password, etc.)
+    prefs = {
+        "credentials_enable_service": False,
+        "profile.password_manager_enabled": False,
+        "profile.password_manager_leak_detection": False,  # Disables breach check
+    }
+    options.add_experimental_option("prefs", prefs)
 
     try:
         driver = webdriver.Chrome(options=options)
@@ -674,6 +725,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
 
             if submitted:
                 print("   Auto-login submitted, waiting for redirect...")
+                # Dismiss any password breach/save popups
+                time.sleep(2)
+                _dismiss_chrome_popups(driver)
             else:
                 print("   Could not find submit button — please click it manually")
 
@@ -691,6 +745,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
 
         while time.time() < deadline:
             time.sleep(2)
+
+            # Try to dismiss any Chrome popups (password breach warnings, etc.)
+            _dismiss_chrome_popups(driver)
 
             try:
                 current = driver.current_url
