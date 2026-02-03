@@ -299,8 +299,11 @@ def prompt_locked_players(
     print("  PHASE 0.75: LOCK PLAYERS")
     print("=" * 60)
 
-    # Group players by position
+    # Group players by position with injury analysis
     positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
+    injury_count = 0
+    doubt_count = 0
+
     for pid in squad_ids:
         player = fpl.get_player(pid)
         if player:
@@ -310,12 +313,20 @@ def prompt_locked_players(
                 "player": player,
                 "scored": sp,
             })
+            if sp.availability == "injured" or sp.availability == "suspended":
+                injury_count += 1
+            elif sp.availability == "doubt":
+                doubt_count += 1
 
     # Sort each position by score descending
     for pos in positions:
         positions[pos].sort(key=lambda x: x["scored"].overall_score, reverse=True)
 
-    # Display with numbers
+    # Injury summary header
+    if injury_count > 0 or doubt_count > 0:
+        print(f"\n  ⚠️  INJURY ALERT: {injury_count} out, {doubt_count} doubtful")
+
+    # Display with numbers and injury status
     print("\n  Your squad:")
     numbered = []
     idx = 1
@@ -325,14 +336,35 @@ def prompt_locked_players(
             for p in positions[pos]:
                 player = p["player"]
                 sp = p["scored"]
+
+                # Availability indicator with details
+                avail_icon = ""
+                avail_detail = ""
+                if sp.availability == "injured":
+                    avail_icon = "❌"
+                    avail_detail = f" [OUT: {sp.injury_details or player.news or 'Injured'}]"
+                elif sp.availability == "suspended":
+                    avail_icon = "🚫"
+                    avail_detail = f" [SUSPENDED: {player.news or 'Red card'}]"
+                elif sp.availability == "doubt":
+                    # Show chance of playing if available
+                    if player.chance_of_playing is not None:
+                        avail_icon = "⚠️"
+                        avail_detail = f" [{player.chance_of_playing}%: {player.news or 'Doubt'}]"
+                    else:
+                        avail_icon = "⚠️"
+                        avail_detail = f" [DOUBT: {sp.injury_details or player.news or 'Knock'}]"
+                else:
+                    avail_icon = "✓"
+
                 print(
-                    f"   {idx:2}. {player.web_name:15} ({player.team:3}) "
-                    f"Form: {player.form} | Score: {sp.overall_score:.1f}"
+                    f"   {idx:2}. {avail_icon} {player.web_name:15} ({player.team:3}) "
+                    f"Form: {player.form} | Score: {sp.overall_score:.1f}{avail_detail}"
                 )
                 numbered.append(p["id"])
                 idx += 1
 
-    print("\n  Lock players you don't want to sell.")
+    print("\n  Lock players you don't want to sell (injured players shown for awareness).")
     choice = input("  [Enter=none, e.g. 1,3,5]: ").strip()
 
     if not choice:
@@ -914,6 +946,42 @@ async def interactive_auto_mode(
     print("\n" + "=" * 60)
     print("  AUTO-PILOT MODE (Interactive)")
     print("=" * 60)
+
+    # Pre-phase: Login and fetch REAL current squad
+    # The public API shows the squad at the last GW deadline, but we need
+    # the actual current state including any pending transfers
+    print("\n🔐 Authenticating to get real-time squad state...")
+    fpl_actions = FPLActions(team_id)
+    try:
+        if await fpl_actions.login():
+            real_squad = await fpl_actions.get_current_squad()
+            if real_squad and len(real_squad) == 15:
+                if set(real_squad) != set(squad_ids):
+                    print("✓ Updated squad with pending transfers")
+                    # Show what changed
+                    old_set = set(squad_ids)
+                    new_set = set(real_squad)
+                    added = new_set - old_set
+                    removed = old_set - new_set
+                    for pid in removed:
+                        p = fpl.get_player(pid)
+                        if p:
+                            print(f"   - {p.web_name} (transferred out)")
+                    for pid in added:
+                        p = fpl.get_player(pid)
+                        if p:
+                            print(f"   + {p.web_name} (transferred in)")
+                    squad_ids = real_squad
+                else:
+                    print("✓ Squad is up to date")
+            else:
+                print("⚠️  Could not fetch real squad, using cached data")
+        else:
+            print("⚠️  Login failed, using cached squad data")
+    except Exception as e:
+        print(f"⚠️  Auth error: {e}, using cached squad data")
+    finally:
+        await fpl_actions.close()
 
     # Phase 0: Settings
     settings = prompt_settings()

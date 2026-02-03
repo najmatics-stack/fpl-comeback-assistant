@@ -234,8 +234,12 @@ class RecommendationEngine:
             if player:
                 current_squad.append(self.scorer.score_player(player))
 
-        # Sort weakest first
-        current_squad.sort(key=lambda x: x.overall_score)
+        # Sort by: 1) availability (injured/suspended first), 2) overall_score (weakest first)
+        # This ensures injured players are always prioritized for transfer out
+        avail_priority = {"injured": 0, "suspended": 0, "doubt": 1, "fit": 2}
+        current_squad.sort(
+            key=lambda x: (avail_priority.get(x.availability, 2), x.overall_score)
+        )
 
         # Force transfers from over-limit teams (e.g., 4 players from one team
         # due to mid-season transfers). FPL API rejects ALL transfers until
@@ -250,7 +254,7 @@ class RecommendationEngine:
                 team_players.sort(key=lambda x: x.overall_score)
                 forced_out.extend(team_players[:excess])
 
-        # Build candidate list: forced transfers first, then weakest players
+        # Build candidate list: forced transfers first, then injured/weak players
         forced_ids = {sp.player.id for sp in forced_out}
         remaining = [sp for sp in current_squad if sp.player.id not in forced_ids]
         # Exclude locked players from candidates (but forced transfers take precedence)
@@ -965,14 +969,27 @@ class RecommendationEngine:
             else:
                 for i, tr in enumerate(plan.transfers, 1):
                     out_p = tr.player_out.player
+                    out_sp = tr.player_out
                     in_p = tr.player_in.player
                     price_str = (
                         f"+{tr.price_diff:.1f}m"
                         if tr.price_diff > 0
                         else f"{tr.price_diff:.1f}m"
                     )
+                    # Add injury indicator for player going out
+                    injury_tag = ""
+                    if out_sp.availability == "injured":
+                        injury_tag = " ❌OUT"
+                    elif out_sp.availability == "suspended":
+                        injury_tag = " 🚫SUSP"
+                    elif out_sp.availability == "doubt":
+                        if out_p.chance_of_playing is not None:
+                            injury_tag = f" ⚠️{out_p.chance_of_playing}%"
+                        else:
+                            injury_tag = " ⚠️DOUBT"
+
                     lines.append(
-                        f"   {i}. {out_p.web_name} ({out_p.team}) -> "
+                        f"   {i}. {out_p.web_name}{injury_tag} ({out_p.team}) -> "
                         f"{in_p.web_name} ({in_p.team})  "
                         f"[{price_str} | +{tr.score_gain:.1f}]"
                     )

@@ -336,6 +336,31 @@ class FPLActions:
             data = await resp.json()
             return data.get("transfers", {}).get("limit", 1)
 
+    async def get_current_squad(self) -> Optional[List[int]]:
+        """Get the REAL current squad IDs from authenticated /my-team/ endpoint.
+
+        This is the authoritative source for the current squad state, including
+        any pending transfers that haven't been confirmed at a GW deadline yet.
+        The public /entry/{id}/event/{gw}/picks/ endpoint shows the squad at
+        the last GW deadline, NOT the current state after transfers.
+        """
+        self._check_login()
+
+        url = f"{self.BASE_URL}/my-team/{self.team_id}/"
+        try:
+            async with self._session.get(url) as resp:
+                if resp.status != 200:
+                    print(f"   [debug] get_current_squad failed: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+                picks = data.get("picks", [])
+                squad_ids = [p["element"] for p in picks]
+                print(f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}")
+                return squad_ids
+        except Exception as e:
+            print(f"   [debug] get_current_squad error: {e}")
+            return None
+
 
 # --- Session persistence ---
 
