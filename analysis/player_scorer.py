@@ -2,7 +2,9 @@
 Player scoring algorithm for ranking and recommendations
 """
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from data.fpl_api import FPLDataFetcher, Player
@@ -10,6 +12,8 @@ from data.news_scraper import NewsScraper, InjuryStatus
 from analysis.fixture_analyzer import FixtureAnalyzer
 
 import config
+
+WEIGHTS_FILE = Path("weights_history.json")
 
 
 def compute_weighted_score(
@@ -52,6 +56,28 @@ class ScoredPlayer:
     defensive_score: float = 0.0
     transfer_momentum: float = 0.0
     availability_multiplier: float = 1.0
+    form_fixture_interaction: float = 0.0  # Team form × fixture ease interaction
+
+
+def load_tuned_weights() -> Optional[Dict[str, float]]:
+    """Load the most recently tuned weights from weights_history.json"""
+    if not WEIGHTS_FILE.exists():
+        return None
+
+    try:
+        with open(WEIGHTS_FILE) as f:
+            history = json.load(f)
+
+        if not history:
+            return None
+
+        latest_gw = max(history.keys(), key=int)
+        weights = history[latest_gw].get("weights")
+        if weights:
+            print(f"   [model] Loaded tuned weights from GW{latest_gw} evaluation")
+        return weights
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
 
 
 class PlayerScorer:
@@ -62,12 +88,19 @@ class PlayerScorer:
         fpl_data: FPLDataFetcher,
         fixture_analyzer: FixtureAnalyzer,
         news_scraper: Optional[NewsScraper] = None,
+        use_tuned_weights: bool = True,
     ):
         self.fpl = fpl_data
         self.fixtures = fixture_analyzer
         self.news = news_scraper
-        self.weights = config.SCORING_WEIGHTS
         self._injuries: Optional[Dict[str, InjuryStatus]] = None
+
+        # Try to load tuned weights, fall back to config defaults
+        self.tuned_weights = None
+        if use_tuned_weights:
+            self.tuned_weights = load_tuned_weights()
+
+        self.weights = config.SCORING_WEIGHTS
 
     def _get_injuries(self) -> Dict[str, InjuryStatus]:
         """Get injury data (cached)"""
@@ -212,9 +245,35 @@ class PlayerScorer:
         return max(0, min(10, score))
 
     def _calculate_transfer_momentum(self, player: Player) -> float:
-        """Calculate transfer momentum bonus (0-2). Market confidence signal."""
+        """Calculate transfer momentum bonus (0-2). Market confidence signal.
+        Position-aware: attackers get bigger boost from momentum."""
         net_transfers = player.transfers_in_event - player.transfers_out_event
-        return max(0, min(2.0, net_transfers / 50000))
+        base = max(0, min(2.0, net_transfers / 50000))
+        # Position multipliers: attackers benefit more from momentum
+        pos_mult = {"FWD": 1.5, "MID": 1.2, "DEF": 0.8, "GKP": 0.5}.get(player.position, 1.0)
+        return base * pos_mult
+
+    def _calculate_form_fixture_interaction(self, player: Player) -> float:
+        """Calculate team form × fixture ease interaction (0-3).
+        Strong teams with easy fixtures should score higher than the sum of parts.
+        This captures contextual synergy the individual factors miss."""
+        team = self.fpl.get_team(player.team_id)
+        if not team or team.form is None:
+            return 0.0
+
+        # Normalize team form (typically 0-3 range) to 0-1
+        team_form_norm = min(1.0, team.form / 3.0)
+
+        # Get fixture ease (0-10) and normalize to 0-1
+        fixture_ease = self.fixtures.get_fixture_ease_score(player.team_id, player.position)
+        fixture_ease_norm = fixture_ease / 10.0
+
+        # Interaction: when both are high, bonus is multiplicative
+        # Example: team_form=0.8, fixture=0.8 -> interaction=0.64*3=1.92
+        # But team_form=0.3, fixture=0.8 -> interaction=0.24*3=0.72
+        interaction = team_form_norm * fixture_ease_norm * 3.0
+
+        return interaction
 
     def _calculate_ict_position_score(self, player: Player) -> float:
         """Calculate position-decomposed ICT score (0-10).
@@ -266,23 +325,42 @@ class PlayerScorer:
         transfer_momentum = self._calculate_transfer_momentum(player)
         ict_position_score = self._calculate_ict_position_score(player)
         availability_mult = self._calculate_availability_multiplier(player)
+        form_fixture_interaction = self._calculate_form_fixture_interaction(player)
 
-        # Use position-specific weights if available, fall back to legacy
+        # Weight priority: 1) tuned weights from evaluator, 2) position-specific, 3) legacy
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
 
-        if pos_weights:
-            factors = {
-                "ep_next": ep_next_score,
-                "form": form_score,
-                "xgi_per_90": xgi_score,
-                "fixture_ease": fixture_score,
-                "defensive": defensive_score,
-                "ict_position": ict_position_score,
-                "value_score": value_score,
-                "minutes_security": minutes_score,
-            }
+        # Build factor dict (same structure for all weight systems)
+        factors = {
+            "ep_next": ep_next_score,
+            "form": form_score,
+            "xgi_per_90": xgi_score,
+            "fixture_ease": fixture_score,
+            "defensive": defensive_score,
+            "ict_position": ict_position_score,
+            "value_score": value_score,
+            "minutes_security": minutes_score,
+        }
+
+        # Select weights: tuned > position-specific > legacy
+        if self.tuned_weights:
+            # Use tuned weights (from evaluator), fill missing with position weights
+            weights = {}
+            for k in factors:
+                if k in self.tuned_weights:
+                    weights[k] = self.tuned_weights[k]
+                elif pos_weights and k in pos_weights:
+                    weights[k] = pos_weights[k]
+                else:
+                    weights[k] = 0.1  # Default fallback
+            # Normalize to sum to 1.0
+            total = sum(weights.values())
+            if total > 0:
+                weights = {k: v / total for k, v in weights.items()}
+        elif pos_weights:
             weights = pos_weights
         else:
+            # Fall back to legacy weights with legacy factors
             factors = {
                 "form": form_score,
                 "xgi_per_90": xgi_score,
@@ -293,22 +371,28 @@ class PlayerScorer:
             }
             weights = self.weights
 
+        # Calculate interaction weight from config (default 0.15)
+        interaction_weight = getattr(config, "TEAM_FORM_INTERACTION_WEIGHT", 0.15)
+
         bonuses = {
             "set_piece": self._calculate_set_piece_bonus(player),
             "bonus_magnet": self._calculate_bonus_magnet_score(player),
             "transfer_momentum": transfer_momentum,
+            "form_fixture_interaction": form_fixture_interaction * interaction_weight,
         }
 
         overall_score = compute_weighted_score(factors, weights, bonuses)
 
         availability, injury_details = self._get_player_availability(player)
 
-        # Smooth availability penalty using probability multiplier
-        # Clamp to small floor so injured players still sort meaningfully
+        # Availability penalty: injured/suspended = 0, doubt = continuous probability
+        # No artificial floor - injured players should not compete for recommendations
         if availability in ("injured", "suspended"):
-            overall_score *= max(0.05, availability_mult)
+            overall_score = 0.0  # Completely unavailable
         elif availability == "doubt":
-            overall_score *= max(0.3, availability_mult)
+            # Use continuous probability from chance_of_playing
+            # 75% chance -> 0.75x, 50% chance -> 0.5x, 25% chance -> 0.25x
+            overall_score *= availability_mult
 
         return ScoredPlayer(
             player=player,
@@ -325,6 +409,7 @@ class PlayerScorer:
             defensive_score=defensive_score,
             transfer_momentum=transfer_momentum,
             availability_multiplier=availability_mult,
+            form_fixture_interaction=form_fixture_interaction,
         )
 
     def get_top_players(

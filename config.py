@@ -64,8 +64,11 @@ POSITION_WEIGHTS = {
 XGI_POSITION_MULTIPLIERS = {"GKP": 25.0, "DEF": 20.0, "MID": 12.5, "FWD": 11.0}
 
 # Fixture recency decay weights: GW+1 through GW+5
-# Next GW matters most, distant fixtures matter less
-FIXTURE_DECAY_WEIGHTS = [1.0, 0.7, 0.5, 0.35, 0.25]
+# Softened decay for better multi-week planning
+FIXTURE_DECAY_WEIGHTS = [1.0, 0.85, 0.70, 0.55, 0.45]
+
+# Team form interaction weight (how much team form affects fixture scores)
+TEAM_FORM_INTERACTION_WEIGHT = 0.15
 
 # Differential thresholds
 DIFFERENTIAL_MAX_OWNERSHIP = 10.0  # Players owned by less than 10%

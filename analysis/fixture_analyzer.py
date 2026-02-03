@@ -106,12 +106,34 @@ class FixtureAnalyzer:
             self._bgw_data = self.fpl.get_blank_gameweeks()
         return self._bgw_data
 
+    def _get_opponent_form_adjustment(self, opp: Team, position: str) -> float:
+        """Calculate adjustment based on opponent's recent form.
+        Poor form opponents = easier fixtures, good form = harder.
+        Returns adjustment in range [-1.0, +1.0]."""
+        if opp.form is None:
+            return 0.0
+
+        # Opponent form typically 0-3 (points per game recently)
+        # Average is ~1.3, good teams ~2.0+, struggling teams ~0.5
+        form_baseline = 1.3
+
+        if position in ("FWD", "MID"):
+            # Attackers benefit when opponent is in poor defensive form
+            # Poor form teams often concede more
+            form_diff = form_baseline - opp.form
+        else:
+            # Defenders benefit when opponent is in poor attacking form
+            form_diff = form_baseline - opp.form
+
+        # Scale: +0.5 form diff -> +0.5 ease bonus, -0.5 diff -> -0.5 penalty
+        return max(-1.0, min(1.0, form_diff * 0.7))
+
     def get_fixture_ease_score(self, team_id: int, position: str = "MID") -> float:
         """
         Calculate fixture ease score (0-10, higher = easier).
         Position-aware: attackers care about opponent defence,
         defenders care about opponent attack.
-        Uses home/away strength split and recency-weighted decay.
+        Uses home/away strength split, opponent form, and recency-weighted decay.
         """
         fixtures = self.fpl.get_fixtures_for_team(team_id, self.lookahead)
         if not fixtures:
@@ -149,7 +171,12 @@ class FixtureAnalyzer:
                         opp_strength = opp.strength_attack_home
 
                 # Strength ~1000-1400 → ease 0-10
-                ease = max(0, min(10, (1400 - opp_strength) / 50 + home_bonus))
+                base_ease = (1400 - opp_strength) / 50 + home_bonus
+
+                # Opponent form adjustment: poor form teams are easier targets
+                form_adj = self._get_opponent_form_adjustment(opp, position)
+
+                ease = max(0, min(10, base_ease + form_adj))
 
             # GW offset determines decay weight (0-indexed)
             gw_offset = f.gameweek - current_gw
