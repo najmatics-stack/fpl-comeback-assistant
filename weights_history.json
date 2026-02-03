@@ -44,5 +44,31 @@
       "recent_points": 0.34873103958564555
     },
     "overall_correlation": 0.3892437874387009
+  },
+  "23-7gw": {
+    "weights": {
+      "ep_next": 0.1353,
+      "form": 0.1142,
+      "xgi_per_90": 0.0318,
+      "fixture_ease": 0.019,
+      "ict_position": 0.1008,
+      "value_score": 0.1652,
+      "minutes_security": 0.0944,
+      "ownership": 0.1761,
+      "recent_points": 0.1633
+    },
+    "correlations": {
+      "ep_next": 0.22377623723891182,
+      "form": 0.22350939068988795,
+      "xgi_per_90": 0.06462391021773928,
+      "fixture_ease": -0.03010196478374283,
+      "ict_position": 0.22722376232416963,
+      "value_score": 0.27723537798189923,
+      "minutes_security": 0.18834222134683942,
+      "ownership": 0.30089923037648303,
+      "recent_points": 0.26629633347539705
+    },
+    "overall_correlation": 0.29432741622368463,
+    "window": 7
   }
 }

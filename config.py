@@ -19,53 +19,53 @@ SCORING_WEIGHTS = {
 }
 
 # Position-specific weight profiles for the enhanced scoring model
-# Optimized for PREDICTION ACCURACY (rank correlation with actual points)
-# Key insight: ownership (0.390) and value_score (0.369) are strongest signals
-# Weak signals fixture_ease (0.098) and xgi_per_90 (0.086) heavily reduced
-# Added recent_points for "hot hand" effect
+# Tuned via 7-WEEK EVALUATION (GW17-23, 2894 observations)
+# Key findings: ownership (0.301), value_score (0.277), recent_points (0.266) are strongest
+# fixture_ease has NEGATIVE correlation (-0.030) - essentially removed
+# xgi_per_90 very weak (0.065) - minimized
 POSITION_WEIGHTS = {
     "GKP": {
-        "ep_next": 0.15,
-        "form": 0.10,
-        "fixture_ease": 0.04,  # Weak signal - minimized
+        "ep_next": 0.14,
+        "form": 0.11,
+        "fixture_ease": 0.02,  # NEGATIVE correlation - nearly removed
         "defensive": 0.16,
-        "value_score": 0.18,  # Strong signal
-        "minutes_security": 0.12,
-        "ownership": 0.15,  # Strongest signal
-        "recent_points": 0.10,  # Hot hand
+        "value_score": 0.17,  # Strong signal
+        "minutes_security": 0.10,
+        "ownership": 0.18,  # Strongest signal
+        "recent_points": 0.12,  # Hot hand
     },
     "DEF": {
-        "ep_next": 0.15,
-        "form": 0.10,
-        "xgi_per_90": 0.04,  # Weak signal - minimized
-        "fixture_ease": 0.04,  # Weak signal - minimized
+        "ep_next": 0.14,
+        "form": 0.11,
+        "xgi_per_90": 0.03,  # Very weak signal
+        "fixture_ease": 0.02,  # NEGATIVE correlation - nearly removed
         "defensive": 0.12,
-        "value_score": 0.18,  # Strong signal
-        "minutes_security": 0.08,
-        "ownership": 0.17,  # Strongest signal
-        "recent_points": 0.12,  # Hot hand
+        "value_score": 0.17,  # Strong signal
+        "minutes_security": 0.09,
+        "ownership": 0.18,  # Strongest signal
+        "recent_points": 0.14,  # Hot hand
     },
     "MID": {
         "ep_next": 0.14,
-        "form": 0.10,
-        "xgi_per_90": 0.04,  # Weak signal - minimized
-        "fixture_ease": 0.04,  # Weak signal - minimized
-        "ict_position": 0.08,
-        "value_score": 0.18,  # Strong signal
-        "minutes_security": 0.08,
-        "ownership": 0.18,  # Strongest signal - template mids matter
-        "recent_points": 0.16,  # Hot hand - crucial for mids
+        "form": 0.11,
+        "xgi_per_90": 0.03,  # Very weak signal
+        "fixture_ease": 0.02,  # NEGATIVE correlation - nearly removed
+        "ict_position": 0.09,
+        "value_score": 0.17,  # Strong signal
+        "minutes_security": 0.09,
+        "ownership": 0.18,  # Strongest signal
+        "recent_points": 0.17,  # Hot hand - crucial for mids
     },
     "FWD": {
         "ep_next": 0.14,
-        "form": 0.10,
-        "xgi_per_90": 0.04,  # Weak signal - minimized
-        "fixture_ease": 0.04,  # Weak signal - minimized
-        "ict_position": 0.08,
-        "value_score": 0.18,  # Strong signal
-        "minutes_security": 0.08,
-        "ownership": 0.18,  # Strongest signal - Haaland effect
-        "recent_points": 0.16,  # Hot hand - crucial for fwds
+        "form": 0.11,
+        "xgi_per_90": 0.03,  # Very weak signal
+        "fixture_ease": 0.02,  # NEGATIVE correlation - nearly removed
+        "ict_position": 0.09,
+        "value_score": 0.17,  # Strong signal
+        "minutes_security": 0.09,
+        "ownership": 0.18,  # Strongest signal
+        "recent_points": 0.17,  # Hot hand - crucial for fwds
     },
 }
 

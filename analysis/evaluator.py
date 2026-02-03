@@ -312,9 +312,118 @@ class ModelEvaluator:
             model_rank_corr=overall_corr,
         )
 
-    async def evaluate_and_save(self, target_gw: int) -> EvaluationResult:
-        """Evaluate and persist new weights"""
-        result = await self.evaluate_gameweek(target_gw)
+    async def evaluate_multi_gw(self, gw_range: List[int]) -> EvaluationResult:
+        """Evaluate model across multiple gameweeks for robust correlation.
+
+        Pools all player-GW observations together for a larger sample size,
+        giving more statistically reliable factor correlations.
+        """
+        players = [p for p in self.fpl.get_all_players() if p.minutes > 0]
+        await self._fetch_histories([p.id for p in players])
+
+        fixture_analyzer = FixtureAnalyzer(self.fpl)
+
+        # Get weight system
+        sample_pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get("MID")
+        if sample_pos_weights:
+            current_weights = dict(sample_pos_weights)
+        else:
+            current_weights = dict(config.SCORING_WEIGHTS)
+
+        factor_names = list(current_weights.keys())
+
+        # Pool all observations across all GWs
+        all_factor_values: Dict[str, List[float]] = {f: [] for f in factor_names}
+        all_actual_points: List[float] = []
+        all_overall_scores: List[float] = []
+        gw_counts = {gw: 0 for gw in gw_range}
+
+        for target_gw in gw_range:
+            for player in players:
+                factors = self._get_pre_gw_factors(player, target_gw, fixture_analyzer)
+                actual = self._get_actual_gw_points(player.id, target_gw)
+
+                if factors is None or actual is None:
+                    continue
+
+                for f in factor_names:
+                    all_factor_values[f].append(factors.get(f, 0))
+                all_actual_points.append(float(actual))
+
+                pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+                weights = pos_weights if pos_weights else config.SCORING_WEIGHTS
+                score = compute_weighted_score(factors, weights)
+                all_overall_scores.append(score)
+                gw_counts[target_gw] += 1
+
+        print(f"   Pooled {len(all_actual_points)} player-GW observations across {len(gw_range)} GWs")
+        for gw in gw_range:
+            print(f"      GW{gw}: {gw_counts[gw]} observations")
+
+        # Compute correlations on pooled data
+        correlations = []
+        total_corr = 0
+        for f in factor_names:
+            corr = self._spearman(all_factor_values[f], all_actual_points)
+            total_corr += abs(corr)
+            correlations.append((f, corr))
+
+        # Suggest new weights
+        new_weights = {}
+        if total_corr > 0:
+            for f, corr in correlations:
+                corr_weight = max(0.02, abs(corr)) / total_corr
+                new_weights[f] = round(current_weights[f] * 0.7 + corr_weight * 0.3, 4)
+        else:
+            new_weights = dict(current_weights)
+
+        weight_sum = sum(new_weights.values())
+        if weight_sum > 0:
+            new_weights = {k: round(v / weight_sum, 4) for k, v in new_weights.items()}
+
+        # Build result
+        factor_results = []
+        for f, corr in correlations:
+            old_w = current_weights[f]
+            new_w = new_weights[f]
+            if new_w > old_w + 0.005:
+                direction = "up"
+            elif new_w < old_w - 0.005:
+                direction = "down"
+            else:
+                direction = "hold"
+
+            factor_results.append(FactorCorrelation(
+                name=f,
+                correlation=corr,
+                current_weight=old_w,
+                suggested_weight=new_w,
+                direction=direction,
+            ))
+
+        overall_corr = self._spearman(all_overall_scores, all_actual_points)
+
+        # Use the last GW in range as the "gameweek" label
+        return EvaluationResult(
+            gameweek=max(gw_range),
+            factor_correlations=factor_results,
+            old_weights=current_weights,
+            new_weights=new_weights,
+            model_rank_corr=overall_corr,
+        )
+
+    async def evaluate_and_save(self, target_gw: int, window: int = 1) -> EvaluationResult:
+        """Evaluate and persist new weights.
+
+        Args:
+            target_gw: The target gameweek (or end of range if window > 1)
+            window: Number of GWs to evaluate (default 1 = single GW)
+        """
+        if window > 1:
+            gw_range = list(range(target_gw - window + 1, target_gw + 1))
+            result = await self.evaluate_multi_gw(gw_range)
+        else:
+            result = await self.evaluate_gameweek(target_gw)
 
         # Load or create history
         history = {}
@@ -322,10 +431,12 @@ class ModelEvaluator:
             with open(WEIGHTS_FILE) as f:
                 history = json.load(f)
 
-        history[str(target_gw)] = {
+        key = f"{target_gw}" if window == 1 else f"{target_gw}-{window}gw"
+        history[key] = {
             "weights": result.new_weights,
             "correlations": {fc.name: fc.correlation for fc in result.factor_correlations},
             "overall_correlation": result.model_rank_corr,
+            "window": window,
         }
 
         with open(WEIGHTS_FILE, "w") as f:
@@ -347,10 +458,15 @@ class ModelEvaluator:
         latest_gw = max(history.keys(), key=int)
         return history[latest_gw]["weights"]
 
-    def format_result(self, r: EvaluationResult) -> str:
+    def format_result(self, r: EvaluationResult, window: int = 1) -> str:
+        if window > 1:
+            gw_label = f"GW{r.gameweek - window + 1}-{r.gameweek} ({window} weeks)"
+        else:
+            gw_label = f"GW{r.gameweek}"
+
         lines = [
             f"\n{'=' * 60}",
-            f"  MODEL EVALUATION - GW{r.gameweek}",
+            f"  MODEL EVALUATION - {gw_label}",
             f"{'=' * 60}",
             f"\n  Overall Rank Correlation: {r.model_rank_corr:.3f}",
             f"\n  Factor Analysis:",

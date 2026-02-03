@@ -124,6 +124,14 @@ def parse_args():
         metavar="GW",
         help="Evaluate model on completed GW and auto-tune weights",
     )
+    parser.add_argument(
+        "--window",
+        "-w",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Number of GWs to evaluate (default 1, use 7 for robust sample)",
+    )
 
     parser.add_argument(
         "--compare",
@@ -1149,8 +1157,8 @@ async def main_async(args):
     # Generate and display recommendations
     if args.evaluate:
         evaluator = ModelEvaluator(fpl)
-        result = await evaluator.evaluate_and_save(args.evaluate)
-        print(evaluator.format_result(result))
+        result = await evaluator.evaluate_and_save(args.evaluate, window=args.window)
+        print(evaluator.format_result(result, window=args.window))
         return
 
     if args.compare:

@@ -74,12 +74,18 @@ def load_tuned_weights() -> Optional[Dict[str, float]]:
         if not history:
             return None
 
-        latest_gw = max(history.keys(), key=int)
-        weights = history[latest_gw].get("weights")
+        # Find the latest entry - keys can be "23" or "23-7gw"
+        def parse_gw(key: str) -> int:
+            if "-" in key:
+                return int(key.split("-")[0])
+            return int(key)
+
+        latest_key = max(history.keys(), key=parse_gw)
+        weights = history[latest_key].get("weights")
         if weights:
-            print(f"   [model] Loaded tuned weights from GW{latest_gw} evaluation")
+            print(f"   [model] Loaded tuned weights from {latest_key} evaluation")
         return weights
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
         return None
 
 
