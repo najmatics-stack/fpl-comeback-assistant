@@ -302,6 +302,22 @@ class RecommendationEngine:
                     if out_ownership >= 70:
                         score_gain *= 0.85  # Penalty for selling must-haves
 
+                    # Global vs league: heavily boost safe differentials
+                    # World validates the pick, rivals don't own — maximum exploitation
+                    safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+                    if top.player.id in safe_diff_ids:
+                        score_gain *= 1.50  # Heavy bonus: world-proven league differential
+
+                    # Trending hidden gems get a strong boost too
+                    trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
+                    if top.player.id in trending_ids:
+                        score_gain *= 1.35  # World is moving here, league hasn't caught on
+
+                    # Selling a league-overweight player your rivals cling to = exploitable
+                    overweight_ids = {e.player_id for e in self.league_intel.league_overweight}
+                    if weak.player.id in overweight_ids:
+                        score_gain *= 1.25  # Rivals over-index, selling exploits the gap
+
                 # For hits (-4), require higher threshold
                 transfer_number = len(recommendations) + 1
                 is_hit = transfer_number > free_transfers
@@ -329,6 +345,28 @@ class RecommendationEngine:
                         reasons.append(f"league differential ({in_ownership:.0f}% rivals)")
                     if out_ownership >= 70:
                         reasons.append(f"rival template ({out_ownership:.0f}% own)")
+
+                    # Global vs league reasons
+                    safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+                    if top.player.id in safe_diff_map:
+                        e = safe_diff_map[top.player.id]
+                        reasons.append(
+                            f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
+                        )
+                    trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+                    if top.player.id in trending_map:
+                        e = trending_map[top.player.id]
+                        xfers = e.transfers_in_event
+                        xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                        reasons.append(
+                            f"TRENDING: +{xfers_str} transfers, league asleep"
+                        )
+                    overweight_map = {e.player_id: e for e in self.league_intel.league_overweight}
+                    if weak.player.id in overweight_map:
+                        e = overweight_map[weak.player.id]
+                        reasons.append(
+                            f"EXPLOIT: league over-indexes ({e.league_ownership:.0f}% vs {e.global_ownership:.0f}% global)"
+                        )
 
                 reason = ", ".join(reasons) if reasons else "overall upgrade"
 
@@ -473,6 +511,23 @@ class RecommendationEngine:
                 elif player.id in self.league_intel.captain_targets:
                     expected_pts *= 1.15
 
+                # Global vs league captain boost: if the world backs them
+                # but your league doesn't captain them, that's maximum exploitation
+                safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+                if player.id in safe_diff_ids:
+                    captain_count = self.league_intel.league_captains.get(player.id, 0)
+                    if captain_count <= 1:
+                        expected_pts *= 1.30  # World-backed, league-ignored = massive edge
+                    else:
+                        expected_pts *= 1.15  # World-backed even if a few rivals captain
+
+                # Trending hidden as captain = bold but world-validated move
+                trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
+                if player.id in trending_ids:
+                    captain_count = self.league_intel.league_captains.get(player.id, 0)
+                    if captain_count == 0:
+                        expected_pts *= 1.25  # Nobody in league captaining, world is moving here
+
             # Generate fixture info
             fixtures_str = " + ".join(
                 f"{opp}" for _, opp, diff, _ in fixture_run.fixtures[:2]
@@ -502,6 +557,19 @@ class RecommendationEngine:
                     reasons.append(f"fade: {cap_count}/{num_rivals} rivals captaining")
                 elif player.id in self.league_intel.captain_targets:
                     reasons.append(f"differential captain ({cap_count}/{num_rivals} rivals)")
+
+                safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+                if player.id in safe_diff_map:
+                    e = safe_diff_map[player.id]
+                    reasons.append(
+                        f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
+                    )
+                trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+                if player.id in trending_map:
+                    e = trending_map[player.id]
+                    xfers = e.transfers_in_event
+                    xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                    reasons.append(f"TRENDING: +{xfers_str} transfers, league asleep")
             elif player.selected_by_percent > 30:
                 reasons.append("safe pick")
             elif player.selected_by_percent < 10:
@@ -1044,6 +1112,46 @@ class RecommendationEngine:
                         lines.append(
                             f"      {p.web_name} ({p.team}) form:{p.form} - {pct:.0f}% of rivals"
                         )
+            lines.append("")
+
+        # Global vs League Exploitation
+        if self.league_intel and (
+            self.league_intel.safe_differentials
+            or self.league_intel.league_overweight
+            or self.league_intel.trending_hidden
+        ):
+            lines.append("🌍 GLOBAL vs LEAGUE EXPLOITATION")
+            lines.append("-" * 40)
+
+            if self.league_intel.safe_differentials:
+                lines.append("   SAFE DIFFERENTIALS (world owns, your league doesn't):")
+                for entry in self.league_intel.safe_differentials[:4]:
+                    lines.append(
+                        f"      {entry.web_name:15} ({entry.team}) "
+                        f"Global: {entry.global_ownership:.0f}% | League: {entry.league_ownership:.0f}% | "
+                        f"Form: {entry.form}"
+                    )
+
+            if self.league_intel.league_overweight:
+                lines.append("   RIVALS OVER-INDEXING (league owns, world doesn't):")
+                for entry in self.league_intel.league_overweight[:4]:
+                    lines.append(
+                        f"      {entry.web_name:15} ({entry.team}) "
+                        f"League: {entry.league_ownership:.0f}% | Global: {entry.global_ownership:.0f}% | "
+                        f"Form: {entry.form}"
+                    )
+
+            if self.league_intel.trending_hidden:
+                lines.append("   TRENDING HIDDEN GEMS (world moving to, nobody owns yet):")
+                for entry in self.league_intel.trending_hidden[:4]:
+                    xfers = entry.transfers_in_event
+                    xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                    lines.append(
+                        f"      {entry.web_name:15} ({entry.team}) "
+                        f"+{xfers_str} transfers | {entry.global_ownership:.0f}% owned | "
+                        f"Form: {entry.form}"
+                    )
+
             lines.append("")
 
         # Comeback Tips

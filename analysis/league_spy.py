@@ -27,6 +27,21 @@ class Rival:
 
 
 @dataclass
+class GlobalVsLeague:
+    """A player with a discrepancy between global and league ownership"""
+    player_id: int
+    web_name: str
+    team: str
+    position: str
+    global_ownership: float  # % of all FPL managers
+    league_ownership: float  # % of rivals in mini-league
+    discrepancy: float  # global - league (positive = world owns more)
+    form: float
+    transfers_in_event: int
+    category: str  # "safe_differential", "league_overweight", "trending_hidden"
+
+
+@dataclass
 class LeagueIntel:
     """Intelligence on your mini-league"""
     league_name: str
@@ -44,6 +59,11 @@ class LeagueIntel:
     must_have: List[int]  # player_ids almost everyone has (risky to not own)
     captain_fades: List[int]  # popular captain picks to avoid for differentiation
     captain_targets: List[int]  # good picks that few rivals are captaining
+
+    # Global vs league discrepancy analysis
+    safe_differentials: List[GlobalVsLeague] = field(default_factory=list)  # World owns, league doesn't
+    league_overweight: List[GlobalVsLeague] = field(default_factory=list)  # League over-indexes vs world
+    trending_hidden: List[GlobalVsLeague] = field(default_factory=list)  # High transfer momentum, low ownership
 
 
 class LeagueSpy:
@@ -234,6 +254,11 @@ class LeagueSpy:
             and p.total_points > 50
         ]
 
+        # Global vs league discrepancy analysis
+        safe_diffs, league_over, trending = self._analyze_global_vs_league(
+            league_ownership, all_players
+        )
+
         return LeagueIntel(
             league_name=league_name,
             your_rank=your_rank,
@@ -246,7 +271,73 @@ class LeagueSpy:
             must_have=must_have,
             captain_fades=captain_fades,
             captain_targets=captain_targets,
+            safe_differentials=safe_diffs,
+            league_overweight=league_over,
+            trending_hidden=trending,
         )
+
+    def _analyze_global_vs_league(
+        self,
+        league_ownership: Dict[int, float],
+        all_players: List[Player],
+    ) -> Tuple[List[GlobalVsLeague], List[GlobalVsLeague], List[GlobalVsLeague]]:
+        """Compare global FPL ownership against mini-league ownership to find exploitable gaps.
+
+        Returns:
+            safe_differentials: Players the world owns but your league doesn't (reliable edge)
+            league_overweight: Players your league over-indexes on vs the world (potential fade targets)
+            trending_hidden: Players with high transfer momentum that neither league nor world fully owns
+        """
+        safe_differentials = []
+        league_overweight = []
+        trending_hidden = []
+
+        for player in all_players:
+            if player.status != "a" or player.minutes == 0:
+                continue
+
+            global_pct = player.selected_by_percent
+            league_pct = league_ownership.get(player.id, 0)
+            discrepancy = global_pct - league_pct
+
+            def _make_entry(category: str) -> GlobalVsLeague:
+                return GlobalVsLeague(
+                    player_id=player.id,
+                    web_name=player.web_name,
+                    team=player.team,
+                    position=player.position,
+                    global_ownership=global_pct,
+                    league_ownership=league_pct,
+                    discrepancy=discrepancy,
+                    form=player.form,
+                    transfers_in_event=player.transfers_in_event,
+                    category=category,
+                )
+
+            # Safe differentials: world owns significantly more than league
+            # These are proven picks that give you an edge over rivals
+            if discrepancy > 15 and global_pct > 15 and league_pct < 30 and player.form >= 3.0:
+                safe_differentials.append(_make_entry("safe_differential"))
+
+            # League overweight: league owns significantly more than the world
+            # Your rivals are over-indexing — if these players fail, rivals lose ground
+            if discrepancy < -20 and league_pct > 30 and player.form < 5.0:
+                league_overweight.append(_make_entry("league_overweight"))
+
+            # Trending hidden: high transfer-in momentum, still under-owned everywhere
+            # The world is moving to these players — early mover advantage
+            if (player.transfers_in_event > 50000
+                    and global_pct < 15
+                    and league_pct < 20
+                    and player.form >= 4.0):
+                trending_hidden.append(_make_entry("trending_hidden"))
+
+        # Sort each list by most exploitable
+        safe_differentials.sort(key=lambda x: x.discrepancy, reverse=True)
+        league_overweight.sort(key=lambda x: x.discrepancy)  # Most negative first
+        trending_hidden.sort(key=lambda x: x.transfers_in_event, reverse=True)
+
+        return safe_differentials[:10], league_overweight[:10], trending_hidden[:10]
 
     def format_intel(self, intel: LeagueIntel) -> str:
         """Format league intelligence for display"""
@@ -321,5 +412,38 @@ class LeagueSpy:
         diff_players.sort(key=lambda x: x[0].form, reverse=True)
         for p, pct in diff_players[:5]:
             lines.append(f"    {p.web_name:15} ({p.team}) form:{p.form} - {pct:.0f}% of rivals own")
+
+        # Global vs League discrepancy analysis
+        if intel.safe_differentials or intel.league_overweight or intel.trending_hidden:
+            lines.append(f"\n  GLOBAL vs LEAGUE ANALYSIS:")
+
+        if intel.safe_differentials:
+            lines.append(f"\n  SAFE DIFFERENTIALS (world owns, league doesn't):")
+            for entry in intel.safe_differentials[:5]:
+                lines.append(
+                    f"    {entry.web_name:15} ({entry.team}) "
+                    f"Global: {entry.global_ownership:.1f}% | League: {entry.league_ownership:.0f}% | "
+                    f"Gap: +{entry.discrepancy:.0f}% | Form: {entry.form}"
+                )
+
+        if intel.league_overweight:
+            lines.append(f"\n  LEAGUE OVERWEIGHT (rivals over-indexing vs world):")
+            for entry in intel.league_overweight[:5]:
+                lines.append(
+                    f"    {entry.web_name:15} ({entry.team}) "
+                    f"Global: {entry.global_ownership:.1f}% | League: {entry.league_ownership:.0f}% | "
+                    f"Gap: {entry.discrepancy:.0f}% | Form: {entry.form}"
+                )
+
+        if intel.trending_hidden:
+            lines.append(f"\n  TRENDING HIDDEN GEMS (high transfers in, low ownership):")
+            for entry in intel.trending_hidden[:5]:
+                xfers = entry.transfers_in_event
+                xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                lines.append(
+                    f"    {entry.web_name:15} ({entry.team}) "
+                    f"Transfers in: {xfers_str} | Global: {entry.global_ownership:.1f}% | "
+                    f"League: {entry.league_ownership:.0f}% | Form: {entry.form}"
+                )
 
         return "\n".join(lines)
