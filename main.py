@@ -27,8 +27,86 @@ from analysis.backtester import Backtester
 from analysis.evaluator import ModelEvaluator
 from analysis.comparative_backtest import ComparativeBacktester
 from analysis.league_spy import LeagueSpy
-from analysis.mirror_manager import analyze_mirror, format_mirror_analysis, get_ian_weekly_moves, MIRROR_MANAGER_NAME
+from analysis.mirror_manager import (
+    analyze_mirror, format_mirror_analysis,
+    get_ian_weekly_moves, MIRROR_MANAGER_NAME,
+    BudgetMirrorCandidate, find_budget_mirror_targets,
+)
 from output.recommendations import RecommendationEngine, TransferPlan, TransferRecommendation, CaptainPick
+
+
+# ── ANSI Color Helpers ──────────────────────────────────────
+# Works in Ghostty, iTerm2, and any modern terminal.
+class C:
+    """ANSI color codes for terminal output."""
+    RESET   = "\033[0m"
+    BOLD    = "\033[1m"
+    DIM     = "\033[2m"
+    # Foreground
+    RED     = "\033[31m"
+    GREEN   = "\033[32m"
+    YELLOW  = "\033[33m"
+    BLUE    = "\033[34m"
+    MAGENTA = "\033[35m"
+    CYAN    = "\033[36m"
+    WHITE   = "\033[37m"
+    # Bright foreground
+    BRED    = "\033[91m"
+    BGREEN  = "\033[92m"
+    BYELLOW = "\033[93m"
+    BBLUE   = "\033[94m"
+    BMAGENTA= "\033[95m"
+    BCYAN   = "\033[96m"
+
+
+def c_header(text: str) -> str:
+    """Bold cyan for section headers / phase titles."""
+    return f"{C.BOLD}{C.BCYAN}{text}{C.RESET}"
+
+def c_success(text: str) -> str:
+    """Green for success messages."""
+    return f"{C.BGREEN}{text}{C.RESET}"
+
+def c_warn(text: str) -> str:
+    """Yellow for warnings."""
+    return f"{C.BYELLOW}{text}{C.RESET}"
+
+def c_error(text: str) -> str:
+    """Red for errors."""
+    return f"{C.BRED}{text}{C.RESET}"
+
+def c_debug(text: str) -> str:
+    """Dim grey for debug/progress output."""
+    return f"{C.DIM}{text}{C.RESET}"
+
+def c_label(text: str) -> str:
+    """Bold white for labels (player names, option keys)."""
+    return f"{C.BOLD}{text}{C.RESET}"
+
+def c_value(text: str) -> str:
+    """Magenta for important values (prices, scores, ranks)."""
+    return f"{C.BMAGENTA}{text}{C.RESET}"
+
+def c_prompt(text: str) -> str:
+    """Bold yellow for user prompts."""
+    return f"{C.BOLD}{C.BYELLOW}{text}{C.RESET}"
+
+def c_option(text: str) -> str:
+    """Blue for selectable options."""
+    return f"{C.BBLUE}{text}{C.RESET}"
+
+
+class UserCancelled(Exception):
+    """Raised when the user types 'q' or 'quit' at any prompt."""
+    pass
+
+
+def checked_input(prompt_str: str = "") -> str:
+    """Like input() but raises UserCancelled when the user types 'q' or 'quit'."""
+    value = input(prompt_str)
+    if value.strip().lower() in ("q", "quit"):
+        raise UserCancelled()
+    return value
 
 
 def parse_args():
@@ -228,9 +306,9 @@ def prompt_settings() -> dict:
         "risk": config.AUTO_RISK_LEVEL,
     }
 
-    print("\n" + "=" * 60)
-    print("  PHASE 0: SETTINGS")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 0: SETTINGS"))
+    print(c_header("=" * 60))
     print(
         f"\n  max_hits={settings['max_hits']} | "
         f"min_gain_free={settings['min_gain_free']} | "
@@ -239,7 +317,7 @@ def prompt_settings() -> dict:
         f"risk={settings['risk']}"
     )
 
-    choice = input("\nAdjust? [Enter=skip, s=settings]: ").strip().lower()
+    choice = checked_input(c_prompt("\nAdjust? [Enter=skip, s=settings, q=quit]: ")).strip().lower()
     if choice != "s":
         return settings
 
@@ -249,7 +327,7 @@ def prompt_settings() -> dict:
         for i, key in enumerate(setting_keys, 1):
             print(f"  {i}. {key} = {settings[key]}")
         print()
-        cmd = input("Change (<number> <value>, or Enter=done): ").strip()
+        cmd = checked_input("Change (<number> <value>, or Enter=done, q=quit): ").strip()
         if not cmd:
             break
 
@@ -282,9 +360,9 @@ def prompt_settings() -> dict:
 
 def prompt_chip(available_chips: List[str]) -> Optional[str]:
     """Phase 0.5: Let user select a chip to play or skip."""
-    print("\n" + "=" * 60)
-    print("  PHASE 0.5: CHIP SELECTION")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 0.5: CHIP SELECTION"))
+    print(c_header("=" * 60))
 
     chip_map = {
         "f": ("free_hit", "Free Hit"),
@@ -304,8 +382,8 @@ def prompt_chip(available_chips: List[str]) -> Optional[str]:
         return None
 
     prompt_str = ", ".join(options)
-    print(f"\n  Play a chip? [Enter=none, {prompt_str}]: ", end="")
-    choice = input().strip().lower()
+    print(c_prompt(f"\n  Play a chip? [Enter=none, {prompt_str}, q=quit]: "), end="")
+    choice = checked_input().strip().lower()
 
     if choice in chip_map:
         chip_val, chip_label = chip_map[choice]
@@ -329,9 +407,9 @@ def prompt_locked_players(
 
     Returns set of locked player IDs.
     """
-    print("\n" + "=" * 60)
-    print("  PHASE 0.75: LOCK PLAYERS")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 0.75: LOCK PLAYERS"))
+    print(c_header("=" * 60))
 
     # Group players by position with injury analysis
     positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
@@ -399,7 +477,7 @@ def prompt_locked_players(
                 idx += 1
 
     print("\n  Lock players you don't want to sell (injured players shown for awareness).")
-    choice = input("  [Enter=none, e.g. 1,3,5]: ").strip()
+    choice = checked_input(c_prompt("  [Enter=none, e.g. 1,3,5, q=quit]: ")).strip()
 
     if not choice:
         print("  No players locked.")
@@ -429,101 +507,444 @@ def prompt_locked_players(
     return locked_ids
 
 
+def _build_mirror_transfers(
+    recommender: RecommendationEngine,
+    fpl: FPLDataFetcher,
+    squad_ids: List[int],
+    target_squad: List[int],
+    reason: str = "Mirror Ian Foster",
+) -> List[TransferRecommendation]:
+    """Build transfer list to transform squad_ids into target_squad.
+
+    Matches outgoing/incoming players by position to satisfy FPL's
+    same-position transfer requirement.
+    """
+    current_set = set(squad_ids)
+    target_set = set(target_squad)
+
+    # Group outgoing and incoming by position
+    outs_by_pos: dict = {}
+    ins_by_pos: dict = {}
+
+    for pid in squad_ids:
+        if pid not in target_set:
+            p = fpl.get_player(pid)
+            if p:
+                sp = recommender.scorer.score_player(p)
+                outs_by_pos.setdefault(p.position, []).append(sp)
+
+    for pid in target_squad:
+        if pid not in current_set:
+            p = fpl.get_player(pid)
+            if p:
+                sp = recommender.scorer.score_player(p)
+                ins_by_pos.setdefault(p.position, []).append(sp)
+
+    transfers = []
+    for pos in ["GKP", "DEF", "MID", "FWD"]:
+        pos_outs = outs_by_pos.get(pos, [])
+        pos_ins = ins_by_pos.get(pos, [])
+        # Sort: outs by score ascending, ins by score descending
+        # so best incoming replaces worst outgoing
+        pos_outs.sort(key=lambda sp: sp.overall_score)
+        pos_ins.sort(key=lambda sp: sp.overall_score, reverse=True)
+        for out_sp, in_sp in zip(pos_outs, pos_ins):
+            transfers.append(TransferRecommendation(
+                player_out=out_sp,
+                player_in=in_sp,
+                score_gain=in_sp.overall_score - out_sp.overall_score,
+                price_diff=in_sp.player.price - out_sp.player.price,
+                reason=reason,
+            ))
+
+    return transfers
+
+
+def _budget_constrained_mirror(
+    ian_squad: List[int],
+    squad_ids: List[int],
+    total_budget: float,
+    scorer: "PlayerScorer",
+    fpl: FPLDataFetcher,
+    ian_captain: Optional[int] = None,
+) -> Optional[List[int]]:
+    """Downgrade a target squad to fit within budget.
+
+    Strategy — protect the starting 11, sacrifice the bench:
+      1. Bench players (indices 11-14) are downgraded first, auto-picking the
+         cheapest valid option without prompting.
+      2. Starting 11 (indices 0-10) are only touched if the bench downgrades
+         weren't enough. The user picks from 3 options for each starter.
+      3. Captain is never downgraded.
+
+    Returns modified squad list or None if budget can't be met.
+    """
+    current_set = set(squad_ids)
+    adjusted_squad = list(ian_squad)
+
+    # The squad list from the picks endpoint preserves order:
+    # indices 0-10 = starting XI, 11-14 = bench
+    bench_indices = set(range(11, 15))
+
+    def squad_cost(squad: List[int]) -> float:
+        return sum((fpl.get_player(pid).price if fpl.get_player(pid) else 0.0) for pid in squad)
+
+    cost = squad_cost(adjusted_squad)
+    if cost <= total_budget + 0.05:
+        return adjusted_squad  # Already fits
+
+    # Track team counts for 3-per-team rule
+    team_counts: dict = {}
+    for pid in adjusted_squad:
+        p = fpl.get_player(pid)
+        if p:
+            team_counts[p.team_id] = team_counts.get(p.team_id, 0) + 1
+
+    swaps_made = []
+
+    def _find_valid_cheaper(player, adjusted_squad, aggressive=False):
+        """Find cheaper same-position alternatives.
+        aggressive=True: sort by price ascending (cheapest first) for bench.
+        aggressive=False: sort by score descending (best first) for starters.
+        """
+        candidates = scorer.get_top_players(
+            position=player.position,
+            max_price=player.price - 0.1,
+            limit=50 if aggressive else 30,
+            exclude_unavailable=True,
+        )
+        adjusted_set = set(adjusted_squad)
+        valid = []
+        for candidate in candidates:
+            cp = candidate.player
+            if cp.id in adjusted_set:
+                continue
+            tc = team_counts.get(cp.team_id, 0)
+            if cp.team_id != player.team_id and tc >= 3:
+                continue
+            valid.append(candidate)
+
+        if aggressive:
+            # Sort by price ascending — maximize savings for bench
+            valid.sort(key=lambda c: c.player.price)
+        # else: already sorted by score from get_top_players
+
+        return valid[:5] if aggressive else valid[:3]
+
+    def _do_swap(pid, player, chosen_player):
+        nonlocal cost
+        idx = adjusted_squad.index(pid)
+        adjusted_squad[idx] = chosen_player.id
+
+        team_counts[player.team_id] = team_counts.get(player.team_id, 1) - 1
+        if chosen_player.team_id != player.team_id:
+            team_counts[chosen_player.team_id] = team_counts.get(chosen_player.team_id, 0) + 1
+
+        saving = player.price - chosen_player.price
+        cost -= saving
+        swaps_made.append((player.web_name, chosen_player.web_name, player.price, chosen_player.price, saving))
+
+    # ── PASS 1: Bench downgrades (automatic, cheapest option) ──
+    bench_targets = []
+    for i in bench_indices:
+        if i >= len(ian_squad):
+            continue
+        pid = ian_squad[i]
+        p = fpl.get_player(pid)
+        if p and pid != ian_captain:
+            sp = scorer.score_player(p)
+            bench_targets.append((pid, p, sp, i))
+
+    # Sort bench by price descending (most expensive bench player first = most savings)
+    bench_targets.sort(key=lambda x: x[1].price, reverse=True)
+
+    for pid, player, scored, squad_idx in bench_targets:
+        if cost <= total_budget + 0.05:
+            break
+
+        valid = _find_valid_cheaper(player, adjusted_squad, aggressive=True)
+        if not valid:
+            continue
+
+        # Auto-pick cheapest valid option for bench
+        chosen = valid[0]
+        cp = chosen.player
+        saving = player.price - cp.price
+        print(c_debug(f"  Bench: {player.web_name} (£{player.price}m) → {cp.web_name} (£{cp.price}m)  [saves £{saving:.1f}m]"))
+        _do_swap(pid, player, cp)
+
+    if cost <= total_budget + 0.05:
+        if swaps_made:
+            print(c_success(f"\n  ✓ Bench downgrades only ({len(swaps_made)} swaps) — starting 11 untouched"))
+            print(c_debug(f"  Adjusted cost: £{cost:.1f}m (budget: £{total_budget:.1f}m)"))
+        return adjusted_squad
+
+    # ── PASS 2: Starter downgrades (interactive, user picks) ──
+    print(c_warn(f"\n  Bench downgrades saved £{sum(s[4] for s in swaps_made):.1f}m but still £{cost - total_budget:.1f}m over."))
+    print(c_warn("  Need to downgrade starter(s):"))
+
+    starter_targets = []
+    for i in range(11):
+        if i >= len(ian_squad):
+            continue
+        pid = adjusted_squad[i]  # Use adjusted (bench already swapped)
+        if pid in current_set:
+            continue  # Already own this player, can't downgrade
+        if pid == ian_captain:
+            continue
+        p = fpl.get_player(pid)
+        if p:
+            sp = scorer.score_player(p)
+            starter_targets.append((pid, p, sp))
+
+    # Sort by score ascending (lowest-impact starter first)
+    starter_targets.sort(key=lambda x: x[2].overall_score)
+
+    for pid, player, scored in starter_targets:
+        if cost <= total_budget + 0.05:
+            break
+
+        valid = _find_valid_cheaper(player, adjusted_squad, aggressive=False)
+        if not valid:
+            continue
+
+        shortfall = cost - total_budget
+        print(f"\n  Downgrade needed: {c_label(player.web_name)} ({player.position}, £{player.price}m, score {scored.overall_score:.1f})")
+        print(f"  Still {c_warn(f'£{shortfall:.1f}m')} over budget. Pick a replacement:")
+        for i, cand in enumerate(valid, 1):
+            cp = cand.player
+            saving = player.price - cp.price
+            print(f"    {i}. {cp.web_name:15} ({cp.team}) £{cp.price}m | Score: {cand.overall_score:.1f} | saves £{saving:.1f}m")
+
+        pick = checked_input(c_prompt(f"  [1-{len(valid)}, Enter=1, q=quit]: ")).strip()
+        try:
+            pick_idx = int(pick) - 1 if pick else 0
+            if pick_idx < 0 or pick_idx >= len(valid):
+                pick_idx = 0
+        except ValueError:
+            pick_idx = 0
+
+        chosen = valid[pick_idx]
+        _do_swap(pid, player, chosen.player)
+
+    if cost > total_budget + 0.05:
+        print(c_error(f"  ⚠️  Could not fit squad within budget (£{cost:.1f}m > £{total_budget:.1f}m)"))
+        return None
+
+    # Final summary
+    bench_swaps = [s for s in swaps_made if s[0] in [bt[1].web_name for bt in bench_targets]]
+    starter_swaps = [s for s in swaps_made if s not in bench_swaps]
+    print(f"\n  Budget adjustments ({len(swaps_made)} downgrades):")
+    if bench_swaps:
+        print(c_debug(f"  Bench ({len(bench_swaps)}):"))
+        for orig, repl, orig_price, repl_price, saving in bench_swaps:
+            print(c_debug(f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]"))
+    if starter_swaps:
+        print(c_warn(f"  Starters ({len(starter_swaps)}):"))
+        for orig, repl, orig_price, repl_price, saving in starter_swaps:
+            print(f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]")
+    print(f"  Adjusted squad cost: £{cost:.1f}m (budget: £{total_budget:.1f}m)")
+
+    return adjusted_squad
+
+
 def prompt_free_hit_squad(
     recommender: RecommendationEngine,
     fpl: FPLDataFetcher,
     squad_ids: List[int],
     ian_squad: Optional[List[int]] = None,
     ian_captain: Optional[int] = None,
+    budget_info: Optional[dict] = None,
+    budget_candidates: Optional[List["BudgetMirrorCandidate"]] = None,
 ) -> tuple:
     """Phase 1-FH: Build and display optimal Free Hit squad.
 
+    Args:
+        budget_info: Dict from get_squad_with_budget() with selling prices + bank.
+                     If None, falls back to market prices (less accurate).
+
     Returns (chosen_transfers, new_squad_ids) or ([], squad_ids) if skipped.
     """
-    print("\n" + "=" * 60)
-    print("  PHASE 1-FH: FREE HIT SQUAD")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 1-FH: FREE HIT SQUAD"))
+    print(c_header("=" * 60))
 
-    # Calculate total budget from current squad prices
-    total_budget = 0.0
-    for pid in squad_ids:
-        player = fpl.get_player(pid)
-        if player:
-            total_budget += player.price
-    if total_budget < 50.0:
-        total_budget = 100.0  # Fallback
+    # Calculate total budget — prefer selling prices (accurate) over market prices
+    if budget_info:
+        total_budget = budget_info["total_budget"]
+        print(f"\n  Budget: £{total_budget:.1f}m (selling prices + £{budget_info['bank']:.1f}m bank)")
+    else:
+        total_budget = 0.0
+        for pid in squad_ids:
+            player = fpl.get_player(pid)
+            if player:
+                total_budget += player.price
+        if total_budget < 50.0:
+            total_budget = 100.0  # Fallback
+        print(f"\n  Budget: £{total_budget:.1f}m (market prices — selling prices may be lower)")
+        print("  ⚠️  Could not fetch selling prices; actual budget may differ")
 
-    print(f"\n  Budget: £{total_budget:.1f}m (current squad value)")
-
-    # Option A: Ian Foster's squad (recommended)
-    if ian_squad and len(ian_squad) == 15:
-        print("\n  --- OPTION A: MIRROR IAN FOSTER (Recommended) ---")
-        print("  Ian Foster (#9) - Most consistent manager, never below #1,248")
-        print()
-        ian_scored = []
-        ian_cost = 0.0
+    # Helper to print a squad grouped by position
+    def _print_squad(squad: List[int], captain_id: Optional[int] = None, indent: str = "    "):
         for pos in ["GKP", "DEF", "MID", "FWD"]:
-            for pid in ian_squad:
+            pos_players = []
+            for pid in squad:
                 p = fpl.get_player(pid)
                 if p and p.position == pos:
-                    sp = recommender.scorer.score_player(p)
-                    ian_scored.append(sp)
-                    ian_cost += p.price
-                    cap_mark = " (C)" if pid == ian_captain else ""
-                    print(f"    {p.position} {p.web_name:15} ({p.team}) £{p.price}m{cap_mark}")
+                    cap_mark = " (C)" if pid == captain_id else ""
+                    pos_players.append(f"{p.web_name}{cap_mark}")
+            if pos_players:
+                print(f"{indent}{pos}: {', '.join(pos_players)}")
 
-        print(f"\n  Ian's squad cost: £{ian_cost:.1f}m")
+    # Calculate costs
+    ian_cost = 0.0
+    ian_over_budget = False
+    if ian_squad and len(ian_squad) == 15:
+        for pid in ian_squad:
+            p = fpl.get_player(pid)
+            if p:
+                ian_cost += p.price
+        ian_over_budget = ian_cost > total_budget + 0.05
 
-        # Check budget feasibility
-        if ian_cost > total_budget + 0.5:
-            print(f"  ⚠️  Ian's squad (£{ian_cost:.1f}m) exceeds your budget (£{total_budget:.1f}m)")
-            print("      May need to substitute a cheaper player")
+    current_set = set(squad_ids)
+    has_candidates = budget_candidates and len(budget_candidates) > 0
+    has_ian = ian_squad and len(ian_squad) == 15
+
+    # --- Split candidates into fits-budget vs needs-downgrades ---
+    fits_budget = []
+    needs_downgrade = []
+    if has_candidates:
+        for cand in budget_candidates:
+            if cand.squad_cost <= total_budget + 0.05:
+                fits_budget.append(cand)
+            else:
+                needs_downgrade.append(cand)
+        fits_budget = fits_budget[:3]
+        needs_downgrade = needs_downgrade[:3]
+
+    # Number candidates sequentially across both groups
+    all_numbered = fits_budget + needs_downgrade  # [1..N]
+
+    def _print_candidate(idx: int, cand, show_cost_tag: bool = False):
+        cap_name = "?"
+        cap_p = fpl.get_player(cand.captain)
+        if cap_p:
+            cap_name = cap_p.web_name
+        over = cand.squad_cost - total_budget
+        if over > 0.05:
+            cost_str = c_warn(f"£{cand.squad_cost:.1f}m") + c_warn(f" (+£{over:.1f}m)")
         else:
-            print(f"  ✓ Within budget")
+            cost_str = c_success(f"£{cand.squad_cost:.1f}m")
+        print(c_option(f"  [{idx}] ") + c_label(f"#{cand.rank} \"{cand.team_name}\"") + f" by {cand.manager_name}")
+        print(f"      Points: {c_value(f'{cand.total_points:,}')} | GW: {c_value(str(cand.gw_points))} | Cost: {cost_str} | Captain: {c_label(cap_name)}")
+        print(f"      Overlap: {cand.overlap_count}/15 ({cand.transfers_needed} transfers)")
+        _print_squad(cand.squad, cand.captain, indent="      ")
+        print()
 
-        # Calculate transfers needed
+    num_idx = 1
+    if fits_budget:
+        print(c_header(f"\n  --- FITS YOUR BUDGET (No Downgrades) ---"))
+        print(c_debug(f"  Budget: £{total_budget:.1f}m\n"))
+        for cand in fits_budget:
+            _print_candidate(num_idx, cand)
+            num_idx += 1
+
+    if needs_downgrade:
+        print(c_header(f"\n  --- NEEDS MINOR DOWNGRADES ---"))
+        print(c_debug(f"  Slightly over budget — will auto-pick cheaper alternatives\n"))
+        for cand in needs_downgrade:
+            _print_candidate(num_idx, cand)
+            num_idx += 1
+
+    # --- Show Ian Foster ---
+    if has_ian:
         ian_set = set(ian_squad)
-        current_set = set(squad_ids)
-        transfers_needed = len(ian_set - current_set)
-        print(f"  Transfers: {transfers_needed} changes from your squad")
+        ian_transfers = len(ian_set - current_set)
+        if ian_over_budget:
+            shortfall = ian_cost - total_budget
+            print(c_header(f"  --- IAN FOSTER (Needs Downgrades) ---"))
+            print(f"  Cost: {c_warn(f'£{ian_cost:.1f}m')} ({c_warn(f'£{shortfall:.1f}m over budget')}) | Transfers: {ian_transfers} (will auto-downgrade)")
+        else:
+            print(c_header(f"\n  --- IAN FOSTER (Recommended) ---"))
+            print(f"  Most consistent manager, never below #1,248")
+            print(f"  Cost: {c_success(f'£{ian_cost:.1f}m')} (within budget) | Transfers: {ian_transfers}")
+        _print_squad(ian_squad, ian_captain, indent="    ")
+        print()
 
-        print("\n  [i=use Ian's squad, m=see model's squad, s=skip]: ", end="")
-        choice = input().strip().lower()
+    # Build prompt options
+    num_cands = len(all_numbered)
+    parts = []
+    if num_cands:
+        cand_keys = "/".join(str(i) for i in range(1, num_cands + 1))
+        parts.append(f"{cand_keys}=pick manager")
+    if has_ian:
+        ian_label = "i=Ian (downgrade)" if ian_over_budget else "i=Ian"
+        parts.append(ian_label)
+    parts.extend(["m=model", "s=skip", "q=quit"])
 
-        if choice == "i":
-            # Use Ian's squad
-            transfers = []
-            for pid in squad_ids:
-                if pid not in ian_set:
-                    out_player = fpl.get_player(pid)
-                    if out_player:
-                        out_sp = recommender.scorer.score_player(out_player)
-                        # Find a corresponding in player
-                        for in_pid in ian_squad:
-                            if in_pid not in current_set:
-                                in_player = fpl.get_player(in_pid)
-                                if in_player and in_player.position == out_player.position:
-                                    in_sp = recommender.scorer.score_player(in_player)
-                                    from output.recommendations import TransferRecommendation
-                                    transfers.append(TransferRecommendation(
-                                        player_out=out_sp,
-                                        player_in=in_sp,
-                                        score_gain=in_sp.overall_score - out_sp.overall_score,
-                                        price_diff=in_player.price - out_player.price,
-                                        reason="Mirror Ian Foster"
-                                    ))
-                                    current_set.add(in_pid)
-                                    break
+    print(c_prompt(f"\n  [{', '.join(parts)}]: "), end="")
+    choice = checked_input().strip().lower()
 
-            print(f"\n  ✓ Using Ian Foster's squad ({len(transfers)} transfers)")
+    # Handle scanned candidate selection
+    if num_cands and choice.isdigit() and 1 <= int(choice) <= num_cands:
+        cand = all_numbered[int(choice) - 1]
+        target_squad = list(cand.squad)
+        reason = f"Mirror #{cand.rank} {cand.manager_name}"
+
+        # If candidate is over real budget, auto-downgrade
+        if cand.squad_cost > total_budget + 0.05:
+            print(c_warn(f"\n  Squad is £{cand.squad_cost - total_budget:.1f}m over budget — picking downgrades..."))
+            adjusted = _budget_constrained_mirror(
+                target_squad, squad_ids, total_budget,
+                recommender.scorer, fpl, cand.captain,
+            )
+            if adjusted is None:
+                print(c_error("  ❌ Cannot fit squad within budget even with downgrades"))
+                print(c_warn("     Falling back to model's squad..."))
+                choice = "m"
+            else:
+                target_squad = adjusted
+
+        if choice != "m":
+            transfers = _build_mirror_transfers(
+                recommender, fpl, squad_ids, target_squad, reason=reason,
+            )
+            print(c_success(f"\n  ✓ Using #{cand.rank} {cand.manager_name}'s squad ({len(transfers)} transfers)"))
+            return transfers, target_squad
+
+    # Handle Ian selection
+    if choice == "i" and has_ian:
+        if ian_over_budget:
+            adjusted = _budget_constrained_mirror(
+                ian_squad, squad_ids, total_budget,
+                recommender.scorer, fpl, ian_captain,
+            )
+            if adjusted is None:
+                print(c_error("  ❌ Cannot fit Ian's squad within budget even with downgrades"))
+                print(c_warn("     Falling back to model's squad..."))
+                choice = "m"
+            else:
+                transfers = _build_mirror_transfers(
+                    recommender, fpl, squad_ids, adjusted,
+                )
+                print(c_success(f"\n  ✓ Using Ian Foster's squad with downgrades ({len(transfers)} transfers)"))
+                return transfers, adjusted
+        else:
+            transfers = _build_mirror_transfers(
+                recommender, fpl, squad_ids, ian_squad,
+            )
+            print(c_success(f"\n  ✓ Using Ian Foster's squad ({len(transfers)} transfers)"))
             return transfers, ian_squad
 
-        if choice == "s":
-            print("  Skipping Free Hit.")
-            return [], squad_ids
+    if choice == "s":
+        print(c_debug("  Skipping Free Hit."))
+        return [], squad_ids
 
-        # Fall through to show model's squad
-        print("\n  --- OPTION B: MODEL'S OPTIMAL SQUAD ---")
+    # Fall through to model's squad
+    print()
+
+    # Model's optimal squad (Option B/C or fallback)
+    print("  --- MODEL'S OPTIMAL SQUAD ---")
 
     squad, transfers = recommender.get_free_hit_squad(squad_ids, total_budget)
 
@@ -535,8 +956,8 @@ def prompt_free_hit_squad(
     print(recommender.format_free_hit_squad(squad, transfers, total_budget))
 
     while True:
-        print(f"\n  [Enter=accept, e=edit, s=skip]: ", end="")
-        choice = input().strip().lower()
+        print(f"\n  [Enter=accept, e=edit, s=skip, q=quit]: ", end="")
+        choice = checked_input().strip().lower()
 
         if choice == "s":
             print("  Skipping Free Hit.")
@@ -558,7 +979,7 @@ def prompt_free_hit_squad(
                     p = sp.player
                     print(f"   {i:2}. {p.position} {p.web_name:15} ({p.team}) £{p.price}m | Score: {sp.overall_score:.1f}")
 
-                cmd = input("\nedit-fh> ").strip()
+                cmd = checked_input("\nedit-fh> ").strip()
                 if not cmd or cmd == "done":
                     break
 
@@ -676,9 +1097,9 @@ def prompt_transfer_plan(
     squad_ids: List[int],
 ) -> List[TransferRecommendation]:
     """Phase 1: Show transfer plans, let user pick/edit/skip."""
-    print("\n" + "=" * 60)
-    print("  PHASE 1: TRANSFER PLAN")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 1: TRANSFER PLAN"))
+    print(c_header("=" * 60))
 
     print(recommender.format_transfer_plans(plans))
 
@@ -693,10 +1114,10 @@ def prompt_transfer_plan(
 
     print(
         f"\nPick plan [Enter={recommended_plan.display_label[0] if recommended_plan else 'B'}, "
-        f"a/b/c=select, e=edit, s=skip]: ",
+        f"a/b/c=select, e=edit, s=skip, q=quit]: ",
         end="",
     )
-    choice = input().strip().lower()
+    choice = checked_input().strip().lower()
 
     if choice == "s":
         print("  Skipping transfers.")
@@ -732,7 +1153,7 @@ def prompt_transfer_plan(
         else:
             print("   (no transfers)")
 
-        cmd = input("\nedit> ").strip()
+        cmd = checked_input("\nedit> ").strip()
         if not cmd or cmd == "done":
             break
 
@@ -877,9 +1298,9 @@ def prompt_captain(
     squad_ids: List[int],
 ) -> tuple:
     """Phase 2: Captain selection. Returns (captain_id, vc_id)."""
-    print("\n" + "=" * 60)
-    print("  PHASE 2: CAPTAIN")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 2: CAPTAIN"))
+    print(c_header("=" * 60))
 
     if not captain_picks:
         print("  No captain picks available.")
@@ -896,13 +1317,13 @@ def prompt_captain(
         print(f"      vs {cp.fixture_info} | {cp.reason}")
 
     print(
-        f"\nCaptain [Enter=#1, 1-{len(captain_picks)}=select, o=override]: ",
+        f"\nCaptain [Enter=#1, 1-{len(captain_picks)}=select, o=override, q=quit]: ",
         end="",
     )
-    choice = input().strip().lower()
+    choice = checked_input().strip().lower()
 
     if choice == "o":
-        name_query = input("  Captain name: ").strip()
+        name_query = checked_input("  Captain name: ").strip()
         player = recommender.find_player_by_name(name_query)
         if player and player.id in squad_ids:
             captain_id = player.id
@@ -932,7 +1353,7 @@ def prompt_captain(
             p = cp.player.player
             print(f"\n   {i}. {p.web_name} ({p.team}) - {cp.expected_points:.1f} exp", end="")
         print()
-        vc_choice = input("  > ").strip()
+        vc_choice = checked_input("  > ").strip()
         if vc_choice.isdigit() and 1 <= int(vc_choice) <= len(remaining):
             vc_id = remaining[int(vc_choice) - 1].player.player.id
         else:
@@ -949,18 +1370,20 @@ def prompt_captain(
 
 
 async def prompt_review_and_execute(
-    fpl_actions_cls,
-    team_id: int,
+    fpl_actions: "FPLActions",
     transfers: List[TransferRecommendation],
     captain_id: Optional[int],
     vc_id: Optional[int],
     chip_to_play,
     current_gw: int,
 ):
-    """Phase 3: Final review and execute."""
-    print("\n" + "=" * 60)
-    print("  PHASE 3: REVIEW & EXECUTE")
-    print("=" * 60)
+    """Phase 3: Final review and execute.
+
+    Uses the already-authenticated FPLActions session from the initial login.
+    """
+    print("\n" + c_header("=" * 60))
+    print(c_header("  PHASE 3: REVIEW & EXECUTE"))
+    print(c_header("=" * 60))
 
     actions = []
     if transfers:
@@ -995,49 +1418,41 @@ async def prompt_review_and_execute(
     for i, action in enumerate(actions, 1):
         print(f"   {i}. {action}")
 
-    confirm = input("\nExecute? [Enter/y=yes, n=cancel]: ").strip().lower()
+    confirm = checked_input("\nExecute? [Enter/y=yes, n=cancel, q=quit]: ").strip().lower()
     if confirm == "n":
         print("  Cancelled.")
         return
 
-    # Login and execute
-    fpl_actions = fpl_actions_cls(team_id)
+    # Execute using the existing authenticated session
     all_ok = True
-    try:
-        if not await fpl_actions.login():
-            print("❌ Cannot proceed without login")
-            return
 
-        # Execute transfers
-        if transfers:
-            outs = [tr.player_out.player.id for tr in transfers]
-            ins = [tr.player_in.player.id for tr in transfers]
+    # Execute transfers
+    if transfers:
+        outs = [tr.player_out.player.id for tr in transfers]
+        ins = [tr.player_in.player.id for tr in transfers]
 
-            use_wc = chip_value == "wildcard"
-            use_fh = chip_value == "free_hit"
+        use_wc = chip_value == "wildcard"
+        use_fh = chip_value == "free_hit"
 
-            if not await fpl_actions.make_transfers(outs, ins, current_gw=current_gw, wildcard=use_wc, free_hit=use_fh):
-                all_ok = False
+        if not await fpl_actions.make_transfers(outs, ins, current_gw=current_gw, wildcard=use_wc, free_hit=use_fh):
+            all_ok = False
 
-        # Set captain
-        if captain_id:
-            if not await fpl_actions.set_captain(
-                captain_id, vc_id or captain_id, current_gw
-            ):
-                all_ok = False
+    # Set captain
+    if captain_id:
+        if not await fpl_actions.set_captain(
+            captain_id, vc_id or captain_id, current_gw
+        ):
+            all_ok = False
 
-        # Activate chip (if not already used via transfer)
-        if chip_value in ("triple_captain", "bench_boost"):
-            if not await fpl_actions.activate_chip(chip_value, current_gw + 1):
-                all_ok = False
+    # Activate chip (if not already used via transfer)
+    if chip_value in ("triple_captain", "bench_boost"):
+        if not await fpl_actions.activate_chip(chip_value, current_gw + 1):
+            all_ok = False
 
-        if all_ok:
-            print("\n✓ All actions executed successfully!")
-        else:
-            print("\n⚠️  Some actions failed — check output above")
-
-    finally:
-        await fpl_actions.close()
+    if all_ok:
+        print(c_success("\n✓ All actions executed successfully!"))
+    else:
+        print(c_error("\n⚠️  Some actions failed — check output above"))
 
 
 def display_model_performance():
@@ -1099,20 +1514,23 @@ async def interactive_auto_mode(
     current_gw: int,
 ):
     """Interactive 4-phase auto-pilot mode."""
-    print("\n" + "=" * 60)
-    print("  AUTO-PILOT MODE (Interactive)")
-    print("=" * 60)
+    print("\n" + c_header("=" * 60))
+    print(c_header("  AUTO-PILOT MODE (Interactive)"))
+    print(c_header("=" * 60))
 
     # Display model performance summary
     display_model_performance()
 
-    # Show Ian Foster mirror analysis and save for Free Hit option
+    # Show mirror references and save squads for Free Hit option
     ian_squad = None
     ian_captain = None
 
-    print("\n" + "=" * 60)
-    print("  MIRROR REFERENCE: Ian Foster (#9, Most Consistent)")
-    print("=" * 60)
+    player_names = {p.id: p.web_name for p in fpl.get_all_players()}
+
+    # --- Ian Foster ---
+    print("\n" + c_header("=" * 60))
+    print(c_header("  MIRROR REFERENCE: Ian Foster (Most Consistent)"))
+    print(c_header("=" * 60))
     try:
         mirror_analysis = await analyze_mirror(
             your_squad=squad_ids,
@@ -1120,11 +1538,9 @@ async def interactive_auto_mode(
             free_hit_threshold=4,
         )
         if mirror_analysis:
-            # Save Ian's squad for Free Hit option
             ian_squad = mirror_analysis.target_squad
             ian_captain = mirror_analysis.target_captain
 
-            player_names = {p.id: p.web_name for p in fpl.get_all_players()}
             captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
 
             print(f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}")
@@ -1148,26 +1564,30 @@ async def interactive_auto_mode(
 
             print(f"\n  Ian's captain: {captain_name}")
 
-            # Show Ian's moves this week
             moves = await get_ian_weekly_moves(current_gw)
             if moves and moves['transfers_in']:
                 print(f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}")
 
             print(f"\n  (Run --mirror for full analysis)")
     except Exception as e:
-        print(f"  Could not fetch mirror data: {e}")
+        print(f"  Could not fetch Ian's data: {e}")
 
-    # Pre-phase: Login and fetch REAL current squad
+    # Pre-phase: Login and fetch REAL current squad with selling prices
     # The public API shows the squad at the last GW deadline, but we need
-    # the actual current state including any pending transfers
-    print("\n🔐 Authenticating to get real-time squad state...")
+    # the actual current state including any pending transfers.
+    # This session stays alive and is reused for executing transfers later.
+    print(c_debug("\n🔐 Authenticating to get real-time squad state..."))
     fpl_actions = FPLActions(team_id)
+    logged_in = False
+    squad_budget_info = None
     try:
-        if await fpl_actions.login():
-            real_squad = await fpl_actions.get_current_squad()
-            if real_squad and len(real_squad) == 15:
+        logged_in = await fpl_actions.login()
+        if logged_in:
+            squad_budget_info = await fpl_actions.get_squad_with_budget()
+            if squad_budget_info and len(squad_budget_info["squad_ids"]) == 15:
+                real_squad = squad_budget_info["squad_ids"]
                 if set(real_squad) != set(squad_ids):
-                    print("✓ Updated squad with pending transfers")
+                    print(c_success("✓ Updated squad with pending transfers"))
                     # Show what changed
                     old_set = set(squad_ids)
                     new_set = set(real_squad)
@@ -1183,93 +1603,136 @@ async def interactive_auto_mode(
                             print(f"   + {p.web_name} (transferred in)")
                     squad_ids = real_squad
                 else:
-                    print("✓ Squad is up to date")
+                    print(c_success("✓ Squad is up to date"))
             else:
-                print("⚠️  Could not fetch real squad, using cached data")
+                print(c_warn("⚠️  Could not fetch real squad, using cached data"))
+                squad_budget_info = None
         else:
-            print("⚠️  Login failed, using cached squad data")
+            print(c_warn("⚠️  Login failed, using cached squad data"))
     except Exception as e:
-        print(f"⚠️  Auth error: {e}, using cached squad data")
+        print(c_warn(f"⚠️  Auth error: {e}, using cached squad data"))
+
+    # Scan for budget-compatible top managers
+    # Use MARKET prices for the budget since squad costs are calculated with market prices.
+    # Selling prices are lower, so using them would filter out everyone.
+    budget_candidates = None
+    player_prices = {p.id: p.price for p in fpl.get_all_players()}
+    scan_budget = sum(player_prices.get(pid, 0.0) for pid in squad_ids)
+    if squad_budget_info:
+        # Add bank to market-price squad value
+        scan_budget += squad_budget_info.get("bank", 0.0)
+    if scan_budget < 50.0:
+        scan_budget = 100.0
+    print(c_debug(f"\n  Scan budget: £{scan_budget:.1f}m (market prices + bank)"))
+    try:
+        budget_candidates = await find_budget_mirror_targets(
+            current_gw=current_gw,
+            budget=scan_budget,
+            user_squad=squad_ids,
+            player_prices=player_prices,
+            num_managers=500,
+            max_candidates=6,
+        )
+    except Exception as e:
+        print(c_warn(f"  ⚠️  Budget mirror scan failed: {e}"))
+
+    try:
+        # Phase 0: Settings
+        settings = prompt_settings()
+
+        # Phase 0.5: Chip selection
+        selected_chip = prompt_chip(available_chips)
+
+        # Phase 0.75: Lock non-negotiable players
+        locked_ids = prompt_locked_players(fpl, recommender.scorer, squad_ids)
+
+        # Determine flow based on chip
+        captain_squad_ids = squad_ids  # IDs used for captain picks
+        chip_to_play = None
+
+        if selected_chip == "free_hit":
+            # Phase 1-FH: Free Hit squad builder with mirror options
+            chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
+                recommender, fpl, squad_ids,
+                ian_squad=ian_squad, ian_captain=ian_captain,
+                budget_info=squad_budget_info,
+                budget_candidates=budget_candidates,
+            )
+            if chosen_transfers:
+                # Build a chip_to_play object for review phase
+                chip_to_play = selected_chip
+            else:
+                # User skipped — no chip
+                selected_chip = None
+
+        elif selected_chip == "wildcard":
+            # Wildcard uses same Free Hit flow with mirror options
+            chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
+                recommender, fpl, squad_ids,
+                ian_squad=ian_squad, ian_captain=ian_captain,
+                budget_info=squad_budget_info,
+                budget_candidates=budget_candidates,
+            )
+            if chosen_transfers:
+                chip_to_play = selected_chip
+            else:
+                selected_chip = None
+
+        else:
+            # Normal transfer plan flow (no chip, triple captain, or bench boost)
+            if selected_chip in ("triple_captain", "bench_boost"):
+                chip_to_play = selected_chip
+
+            # Generate transfer plans (locked players excluded from candidates)
+            plans = recommender.get_transfer_plans(
+                squad_ids,
+                free_transfers=1,
+                max_hits=settings["max_hits"],
+                min_gain_free=settings["min_gain_free"],
+                min_gain_hit=settings["min_gain_hit"],
+                risk_level=settings["risk"],
+                locked_ids=locked_ids,
+            )
+
+            # Phase 1: Transfer plan
+            chosen_transfers = prompt_transfer_plan(recommender, plans, squad_ids)
+
+        # Update captain squad IDs to reflect post-transfer squad
+        if chosen_transfers and captain_squad_ids is squad_ids:
+            captain_squad_ids = list(squad_ids)
+            for tr in chosen_transfers:
+                out_id = tr.player_out.player.id
+                in_id = tr.player_in.player.id
+                if out_id in captain_squad_ids:
+                    captain_squad_ids.remove(out_id)
+                    captain_squad_ids.append(in_id)
+
+        # Phase 2: Captain (uses post-transfer squad IDs)
+        captain_picks = recommender.get_captain_picks(
+            captain_squad_ids, limit=config.TOP_CAPTAINS
+        )
+        captain_id, vc_id = prompt_captain(recommender, captain_picks, captain_squad_ids)
+
+        # Phase 3: Review and execute (reuses the existing authenticated session)
+        if not logged_in:
+            # Initial login failed — try once more before executing
+            print("\n🔐 Re-authenticating for execution...")
+            logged_in = await fpl_actions.login()
+
+        if logged_in:
+            await prompt_review_and_execute(
+                fpl_actions, chosen_transfers,
+                captain_id, vc_id, chip_to_play, current_gw,
+            )
+        else:
+            print(c_error("❌ Cannot execute — login failed"))
+
+    except UserCancelled:
+        print("\n\n  Cancelled. No changes were made.")
+
     finally:
+        # Clean up the session
         await fpl_actions.close()
-
-    # Phase 0: Settings
-    settings = prompt_settings()
-
-    # Phase 0.5: Chip selection
-    selected_chip = prompt_chip(available_chips)
-
-    # Phase 0.75: Lock non-negotiable players
-    locked_ids = prompt_locked_players(fpl, recommender.scorer, squad_ids)
-
-    # Determine flow based on chip
-    captain_squad_ids = squad_ids  # IDs used for captain picks
-    chip_to_play = None
-
-    if selected_chip == "free_hit":
-        # Phase 1-FH: Free Hit squad builder with Ian Foster option
-        chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-            recommender, fpl, squad_ids,
-            ian_squad=ian_squad, ian_captain=ian_captain
-        )
-        if chosen_transfers:
-            # Build a chip_to_play object for review phase
-            chip_to_play = selected_chip
-        else:
-            # User skipped — no chip
-            selected_chip = None
-
-    elif selected_chip == "wildcard":
-        # Wildcard uses same Free Hit flow with Ian Foster option
-        chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-            recommender, fpl, squad_ids,
-            ian_squad=ian_squad, ian_captain=ian_captain
-        )
-        if chosen_transfers:
-            chip_to_play = selected_chip
-        else:
-            selected_chip = None
-
-    else:
-        # Normal transfer plan flow (no chip, triple captain, or bench boost)
-        if selected_chip in ("triple_captain", "bench_boost"):
-            chip_to_play = selected_chip
-
-        # Generate transfer plans (locked players excluded from candidates)
-        plans = recommender.get_transfer_plans(
-            squad_ids,
-            free_transfers=1,
-            max_hits=settings["max_hits"],
-            min_gain_free=settings["min_gain_free"],
-            min_gain_hit=settings["min_gain_hit"],
-            risk_level=settings["risk"],
-            locked_ids=locked_ids,
-        )
-
-        # Phase 1: Transfer plan
-        chosen_transfers = prompt_transfer_plan(recommender, plans, squad_ids)
-
-    # Update captain squad IDs to reflect post-transfer squad
-    if chosen_transfers and captain_squad_ids is squad_ids:
-        captain_squad_ids = list(squad_ids)
-        for tr in chosen_transfers:
-            out_id = tr.player_out.player.id
-            in_id = tr.player_in.player.id
-            if out_id in captain_squad_ids:
-                captain_squad_ids.remove(out_id)
-                captain_squad_ids.append(in_id)
-
-    # Phase 2: Captain (uses post-transfer squad IDs)
-    captain_picks = recommender.get_captain_picks(
-        captain_squad_ids, limit=config.TOP_CAPTAINS
-    )
-    captain_id, vc_id = prompt_captain(recommender, captain_picks, captain_squad_ids)
-
-    # Phase 3: Review and execute
-    await prompt_review_and_execute(
-        FPLActions, team_id, chosen_transfers,
-        captain_id, vc_id, chip_to_play, current_gw,
-    )
 
 
 async def main_async(args):
@@ -1288,13 +1751,13 @@ async def main_async(args):
         return
 
     # Print version and model info
-    print(f"\n{'='*60}")
-    print(f"  FPL Comeback Assistant v{VERSION}")
-    print(f"  Model: {MODEL_NAME}")
+    print(c_header(f"\n{'='*60}"))
+    print(c_header(f"  FPL Comeback Assistant v{VERSION}"))
+    print(f"  Model: {c_value(MODEL_NAME)}")
     print(f"  {MODEL_DESCRIPTION}")
-    print(f"{'='*60}")
+    print(c_header(f"{'='*60}"))
 
-    print("\n🔄 Fetching FPL data...")
+    print(c_debug("\n🔄 Fetching FPL data..."))
 
     # Initialize data fetcher
     fpl = FPLDataFetcher()
@@ -1307,7 +1770,7 @@ async def main_async(args):
     await fpl.load_all_data()
 
     current_gw = fpl.get_current_gameweek()
-    print(f"✓ Data loaded for GW{current_gw}")
+    print(c_success(f"✓ Data loaded for GW{current_gw}"))
 
     # Initialize news scraper
     news = NewsScraper()
@@ -1323,17 +1786,17 @@ async def main_async(args):
     squad_picks = None
     team_info = None
     if args.team_id:
-        print(f"🔄 Fetching team {args.team_id}...")
+        print(c_debug(f"🔄 Fetching team {args.team_id}..."))
         squad_picks = await fetch_team_squad(fpl, args.team_id)
         team_info = await fetch_team_info(fpl, args.team_id)
         if squad_picks:
             squad_ids = [p["element"] for p in squad_picks]
-            print(f"✓ Found {len(squad_ids)} players in squad")
-            print(f"   [debug] squad IDs (from GW picks): {squad_ids}")
+            print(c_success(f"✓ Found {len(squad_ids)} players in squad"))
+            print(c_debug(f"   [debug] squad IDs (from GW picks): {squad_ids}"))
             if team_info:
                 name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
                 team_name = team_info.get('name', 'Unknown')
-                print(f"✓ Manager: {name} | Team: {team_name}")
+                print(c_success(f"✓ Manager: {name} | Team: {team_name}"))
         else:
             print("⚠️  Could not fetch team - using general recommendations")
 
@@ -1349,7 +1812,7 @@ async def main_async(args):
     ])
     if args.team_id and is_auto_or_default:
         try:
-            print("🔄 Scanning rival squads...")
+            print(c_debug("🔄 Scanning rival squads..."))
             spy = LeagueSpy(fpl, args.team_id)
             league_intel = await spy.analyze_league(league_id=args.league_id)
             if league_intel:

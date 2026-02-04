@@ -361,6 +361,50 @@ class FPLActions:
             print(f"   [debug] get_current_squad error: {e}")
             return None
 
+    async def get_squad_with_budget(self) -> Optional[Dict]:
+        """Get current squad IDs with accurate selling prices and bank balance.
+
+        Returns dict with:
+            squad_ids: List[int] - player element IDs
+            selling_prices: Dict[int, float] - player_id -> selling price in £m
+            bank: float - bank balance in £m
+            total_budget: float - sum(selling_prices) + bank in £m
+        """
+        self._check_login()
+
+        url = f"{self.BASE_URL}/my-team/{self.team_id}/"
+        try:
+            async with self._session.get(url) as resp:
+                if resp.status != 200:
+                    print(f"   [debug] get_squad_with_budget failed: HTTP {resp.status}")
+                    return None
+                data = await resp.json()
+
+            picks = data.get("picks", [])
+            transfers_info = data.get("transfers", {})
+
+            squad_ids = [p["element"] for p in picks]
+            # selling_price is in tenths (e.g. 55 = £5.5m)
+            selling_prices = {
+                p["element"]: p["selling_price"] / 10
+                for p in picks
+            }
+            bank = transfers_info.get("bank", 0) / 10
+            total_budget = sum(selling_prices.values()) + bank
+
+            print(f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}")
+            print(f"   [debug] Budget: £{total_budget:.1f}m (selling prices £{sum(selling_prices.values()):.1f}m + bank £{bank:.1f}m)")
+
+            return {
+                "squad_ids": squad_ids,
+                "selling_prices": selling_prices,
+                "bank": bank,
+                "total_budget": total_budget,
+            }
+        except Exception as e:
+            print(f"   [debug] get_squad_with_budget error: {e}")
+            return None
+
 
 # --- Session persistence ---
 
