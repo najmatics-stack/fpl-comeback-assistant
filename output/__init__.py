@@ -1,2 +1,3 @@
 """Output formatting modules"""
-from .recommendations import RecommendationEngine
+
+from .recommendations import RecommendationEngine as RecommendationEngine

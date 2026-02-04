@@ -195,7 +195,7 @@ class FPLDataFetcher:
             picks_data = await self.fetch_team_picks(team_id, current_gw - 1)
 
         if not picks_data or "picks" not in picks_data:
-            print(f"   [debug] No picks data found at all")
+            print("   [debug] No picks data found at all")
             return None
 
         picks = list(picks_data["picks"])
@@ -210,15 +210,19 @@ class FPLDataFetcher:
         if transfers:
             recent = transfers[:6]  # API returns newest first
             for t in recent:
-                print(f"   [debug]   transfer: event={t.get('event')} "
-                      f"out={t.get('element_out')} in={t.get('element_in')} "
-                      f"time={t.get('time', '?')}")
+                print(
+                    f"   [debug]   transfer: event={t.get('event')} "
+                    f"out={t.get('element_out')} in={t.get('element_in')} "
+                    f"time={t.get('time', '?')}"
+                )
 
         # Apply transfers for BOTH current GW and next GW
         # (current GW transfers may not be reflected in picks if GW is in progress)
         next_gw = current_gw + 1
         pending = [t for t in transfers if t.get("event") in (current_gw, next_gw)]
-        print(f"   [debug] Pending transfers for GW{current_gw} or GW{next_gw}: {len(pending)}")
+        print(
+            f"   [debug] Pending transfers for GW{current_gw} or GW{next_gw}: {len(pending)}"
+        )
 
         if pending:
             for t in pending:
@@ -233,12 +237,14 @@ class FPLDataFetcher:
                             break
                     print(f"   [debug]   Applied: {out_id} -> {in_id}")
                 else:
-                    print(f"   [debug]   Skipped (already applied): {out_id} -> {in_id}")
+                    print(
+                        f"   [debug]   Skipped (already applied): {out_id} -> {in_id}"
+                    )
 
             applied_ids = [p["element"] for p in picks]
             print(f"   [debug] Adjusted squad: {applied_ids}")
         else:
-            print(f"   [debug] No pending transfers found — squad unchanged")
+            print("   [debug] No pending transfers found — squad unchanged")
 
         return picks
 
@@ -333,9 +339,7 @@ class FPLDataFetcher:
                 clean_sheets=p["clean_sheets"],
                 expected_goals=float(p["expected_goals"] or 0),
                 expected_assists=float(p["expected_assists"] or 0),
-                expected_goal_involvements=float(
-                    p["expected_goal_involvements"] or 0
-                ),
+                expected_goal_involvements=float(p["expected_goal_involvements"] or 0),
                 influence=float(p["influence"]),
                 creativity=float(p["creativity"]),
                 threat=float(p["threat"]),
@@ -344,7 +348,9 @@ class FPLDataFetcher:
                 bonus=p["bonus"],
                 bps=p["bps"],
                 penalties_order=p.get("penalties_order"),
-                corners_and_indirect_freekicks_order=p.get("corners_and_indirect_freekicks_order"),
+                corners_and_indirect_freekicks_order=p.get(
+                    "corners_and_indirect_freekicks_order"
+                ),
                 direct_freekicks_order=p.get("direct_freekicks_order"),
                 chance_of_playing=p["chance_of_playing_next_round"],
                 news=p["news"],
@@ -403,9 +409,7 @@ class FPLDataFetcher:
         """Get all teams"""
         return list(self._teams.values())
 
-    def get_fixtures_for_team(
-        self, team_id: int, gameweeks: int = 5
-    ) -> List[Fixture]:
+    def get_fixtures_for_team(self, team_id: int, gameweeks: int = 5) -> List[Fixture]:
         """Get upcoming fixtures for a team"""
         if not self._fixtures_data:
             return []

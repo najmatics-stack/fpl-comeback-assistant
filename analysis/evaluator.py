@@ -6,11 +6,10 @@ Runs after each GW to improve the scoring model.
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import asyncio
 import aiohttp
-import numpy as np
 
 import config
 from data.fpl_api import FPLDataFetcher, Player
@@ -24,6 +23,7 @@ LEAGUE_EVAL_FILE = Path("league_evaluation.json")
 @dataclass
 class FactorCorrelation:
     """Correlation between a scoring factor and actual GW points"""
+
     name: str
     correlation: float
     current_weight: float
@@ -34,6 +34,7 @@ class FactorCorrelation:
 @dataclass
 class EvaluationResult:
     """Result of evaluating the model on a completed GW"""
+
     gameweek: int
     factor_correlations: List[FactorCorrelation]
     old_weights: Dict[str, float]
@@ -51,7 +52,9 @@ class ModelEvaluator:
         self.fpl = fpl_data
         self._gw_history: Dict[int, List[Dict]] = {}
 
-    async def _fetch_player_gw_history(self, session: aiohttp.ClientSession, player_id: int) -> List[Dict]:
+    async def _fetch_player_gw_history(
+        self, session: aiohttp.ClientSession, player_id: int
+    ) -> List[Dict]:
         if player_id in self._gw_history:
             return self._gw_history[player_id]
         url = f"{self.BASE_URL}/element-summary/{player_id}/"
@@ -70,12 +73,16 @@ class ModelEvaluator:
         batch_size = 20
         async with aiohttp.ClientSession() as session:
             for i in range(0, len(player_ids), batch_size):
-                batch = player_ids[i:i + batch_size]
-                await asyncio.gather(*[self._fetch_player_gw_history(session, pid) for pid in batch])
+                batch = player_ids[i : i + batch_size]
+                await asyncio.gather(
+                    *[self._fetch_player_gw_history(session, pid) for pid in batch]
+                )
                 if i + batch_size < len(player_ids):
                     await asyncio.sleep(0.5)
 
-    def _get_pre_gw_factors(self, player: Player, target_gw: int, fixture_analyzer: FixtureAnalyzer) -> Optional[Dict[str, float]]:
+    def _get_pre_gw_factors(
+        self, player: Player, target_gw: int, fixture_analyzer: FixtureAnalyzer
+    ) -> Optional[Dict[str, float]]:
         """Compute each scoring factor for a player using only pre-GW data.
         Returns the factor set matching the live model (position-aware)."""
         history = self._gw_history.get(player.id, [])
@@ -98,14 +105,18 @@ class ModelEvaluator:
         form_score = min(10, form)
 
         # xGI per 90
-        total_xgi = sum(float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw)
+        total_xgi = sum(
+            float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw
+        )
         xgi_per_90 = (total_xgi / total_minutes) * 90
         mult = config.XGI_POSITION_MULTIPLIERS.get(player.position, 12.5)
         xgi_score = min(10, xgi_per_90 * mult)
 
         # Fixture ease - use TARGET GW fixtures, not current API state
         # This fixes the backtest leak where we were using future fixture data
-        fixture_score = fixture_analyzer.get_fixture_ease_for_gw(player.team_id, target_gw, player.position)
+        fixture_score = fixture_analyzer.get_fixture_ease_for_gw(
+            player.team_id, target_gw, player.position
+        )
 
         # Value
         total_pts = sum(h["total_points"] for h in pre_gw)
@@ -133,9 +144,13 @@ class ModelEvaluator:
             total_gc = sum(h.get("goals_conceded", 0) for h in pre_gw)
             if player.position == "GKP":
                 total_saves = sum(h.get("saves", 0) for h in pre_gw)
-                defensive_score = (total_cs / nineties) * 12.5 + (total_saves / nineties) * 0.6
+                defensive_score = (total_cs / nineties) * 12.5 + (
+                    total_saves / nineties
+                ) * 0.6
             else:
-                defensive_score = (total_cs / nineties) * 12.5 - (total_gc / nineties) * 0.8
+                defensive_score = (total_cs / nineties) * 12.5 - (
+                    total_gc / nineties
+                ) * 0.8
             defensive_score = max(0, min(10, defensive_score))
 
         # ICT position score
@@ -154,6 +169,7 @@ class ModelEvaluator:
 
         # Ownership score (wisdom of crowds)
         import math
+
         ownership = player.selected_by_percent
         if ownership > 0:
             ownership_score = math.log(ownership + 1) / math.log(61) * 10
@@ -185,7 +201,12 @@ class ModelEvaluator:
                 "recent_points": recent_points_score,
             }
         else:
-            total_ict = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
+            total_ict = sum(
+                float(h.get("influence", 0) or 0)
+                + float(h.get("creativity", 0) or 0)
+                + float(h.get("threat", 0) or 0)
+                for h in pre_gw
+            )
             ict_score = min(10, (total_ict / gp) / 50)
             return {
                 "form": form_score,
@@ -221,7 +242,7 @@ class ModelEvaluator:
         ry = rank(y)
 
         d_sq = sum((rx[i] - ry[i]) ** 2 for i in range(n))
-        return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
+        return 1 - (6 * d_sq) / (n * (n**2 - 1))
 
     async def evaluate_gameweek(self, target_gw: int) -> EvaluationResult:
         """Evaluate model on a completed gameweek and suggest weight adjustments.
@@ -297,13 +318,15 @@ class ModelEvaluator:
             else:
                 direction = "hold"
 
-            factor_results.append(FactorCorrelation(
-                name=f,
-                correlation=corr,
-                current_weight=old_w,
-                suggested_weight=new_w,
-                direction=direction,
-            ))
+            factor_results.append(
+                FactorCorrelation(
+                    name=f,
+                    correlation=corr,
+                    current_weight=old_w,
+                    suggested_weight=new_w,
+                    direction=direction,
+                )
+            )
 
         overall_corr = self._spearman(overall_scores, actual_points)
 
@@ -361,13 +384,17 @@ class ModelEvaluator:
                     all_factor_values[f].append(factors.get(f, 0))
                 all_actual_points.append(float(actual))
 
-                pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
+                pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(
+                    player.position
+                )
                 weights = pos_weights if pos_weights else config.SCORING_WEIGHTS
                 score = compute_weighted_score(factors, weights)
                 all_overall_scores.append(score)
                 gw_counts[target_gw] += 1
 
-        print(f"   Pooled {len(all_actual_points)} player-GW observations across {len(gw_range)} GWs")
+        print(
+            f"   Pooled {len(all_actual_points)} player-GW observations across {len(gw_range)} GWs"
+        )
         for gw in gw_range:
             print(f"      GW{gw}: {gw_counts[gw]} observations")
 
@@ -404,13 +431,15 @@ class ModelEvaluator:
             else:
                 direction = "hold"
 
-            factor_results.append(FactorCorrelation(
-                name=f,
-                correlation=corr,
-                current_weight=old_w,
-                suggested_weight=new_w,
-                direction=direction,
-            ))
+            factor_results.append(
+                FactorCorrelation(
+                    name=f,
+                    correlation=corr,
+                    current_weight=old_w,
+                    suggested_weight=new_w,
+                    direction=direction,
+                )
+            )
 
         overall_corr = self._spearman(all_overall_scores, all_actual_points)
 
@@ -431,7 +460,9 @@ class ModelEvaluator:
             ownership_baseline_corr=ownership_corr,
         )
 
-    async def evaluate_and_save(self, target_gw: int, window: int = 1) -> EvaluationResult:
+    async def evaluate_and_save(
+        self, target_gw: int, window: int = 1
+    ) -> EvaluationResult:
         """Evaluate and persist new weights.
 
         Args:
@@ -453,7 +484,9 @@ class ModelEvaluator:
         key = f"{target_gw}" if window == 1 else f"{target_gw}-{window}gw"
         history[key] = {
             "weights": result.new_weights,
-            "correlations": {fc.name: fc.correlation for fc in result.factor_correlations},
+            "correlations": {
+                fc.name: fc.correlation for fc in result.factor_correlations
+            },
             "overall_correlation": result.model_rank_corr,
             "ownership_baseline": result.ownership_baseline_corr,
             "window": window,
@@ -486,26 +519,36 @@ class ModelEvaluator:
 
         # Calculate advantage over ownership baseline
         advantage = r.model_rank_corr - r.ownership_baseline_corr
-        pct_better = (advantage / r.ownership_baseline_corr * 100) if r.ownership_baseline_corr > 0 else 0
+        pct_better = (
+            (advantage / r.ownership_baseline_corr * 100)
+            if r.ownership_baseline_corr > 0
+            else 0
+        )
 
         lines = [
             f"\n{'=' * 60}",
             f"  MODEL EVALUATION - {gw_label}",
             f"{'=' * 60}",
-            f"\n  MODEL vs OWNERSHIP BASELINE:",
+            "\n  MODEL vs OWNERSHIP BASELINE:",
             f"    Our Model:        {r.model_rank_corr:.3f}",
             f"    Ownership Only:   {r.ownership_baseline_corr:.3f}",
         ]
 
         if advantage >= 0:
-            lines.append(f"    Advantage:        +{advantage:.3f} ({pct_better:+.1f}% better)")
+            lines.append(
+                f"    Advantage:        +{advantage:.3f} ({pct_better:+.1f}% better)"
+            )
         else:
-            lines.append(f"    Advantage:        {advantage:.3f} ({pct_better:.1f}% worse)")
+            lines.append(
+                f"    Advantage:        {advantage:.3f} ({pct_better:.1f}% worse)"
+            )
 
-        lines.append(f"\n  Factor Analysis:")
+        lines.append("\n  Factor Analysis:")
 
         arrow = {"up": "↑", "down": "↓", "hold": "→"}
-        for fc in sorted(r.factor_correlations, key=lambda x: x.correlation, reverse=True):
+        for fc in sorted(
+            r.factor_correlations, key=lambda x: x.correlation, reverse=True
+        ):
             a = arrow[fc.direction]
             lines.append(
                 f"    {fc.name:20} corr: {fc.correlation:+.3f}  "
@@ -539,7 +582,9 @@ class ModelEvaluator:
             return {
                 "key": latest_key,
                 "overall_correlation": entry.get("overall_correlation", 0),
-                "ownership_correlation": entry.get("correlations", {}).get("ownership", 0),
+                "ownership_correlation": entry.get("correlations", {}).get(
+                    "ownership", 0
+                ),
                 "window": entry.get("window", 1),
             }
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
@@ -555,7 +600,9 @@ class LeagueEvaluator:
         self.fpl = fpl_data
         self.your_team_id = your_team_id
         self._gw_history: Dict[int, List[Dict]] = {}
-        self._rival_picks: Dict[int, Dict[int, List[int]]] = {}  # team_id -> {gw -> [player_ids]}
+        self._rival_picks: Dict[
+            int, Dict[int, List[int]]
+        ] = {}  # team_id -> {gw -> [player_ids]}
 
     async def _fetch_json(self, session: aiohttp.ClientSession, url: str) -> Dict:
         """Fetch JSON with retry logic"""
@@ -571,7 +618,9 @@ class LeagueEvaluator:
                 await asyncio.sleep(1)
         return {}
 
-    async def _fetch_player_gw_history(self, session: aiohttp.ClientSession, player_id: int) -> List[Dict]:
+    async def _fetch_player_gw_history(
+        self, session: aiohttp.ClientSession, player_id: int
+    ) -> List[Dict]:
         if player_id in self._gw_history:
             return self._gw_history[player_id]
         url = f"{self.BASE_URL}/element-summary/{player_id}/"
@@ -580,7 +629,9 @@ class LeagueEvaluator:
         self._gw_history[player_id] = history
         return history
 
-    async def _fetch_rival_picks_for_gw(self, session: aiohttp.ClientSession, team_id: int, gw: int) -> List[int]:
+    async def _fetch_rival_picks_for_gw(
+        self, session: aiohttp.ClientSession, team_id: int, gw: int
+    ) -> List[int]:
         """Fetch a rival's squad for a specific GW"""
         if team_id in self._rival_picks and gw in self._rival_picks[team_id]:
             return self._rival_picks[team_id][gw]
@@ -606,19 +657,20 @@ class LeagueEvaluator:
         entry = await self._fetch_json(session, entry_url)
 
         leagues = entry.get("leagues", {}).get("classic", [])
-        private_leagues = [l for l in leagues if l.get("league_type") == "x"]
+        private_leagues = [lg for lg in leagues if lg.get("league_type") == "x"]
 
         if not private_leagues:
             private_leagues = [
-                l for l in leagues
-                if l.get("entry_rank", 0) > 0 and l.get("entry_rank", 999999) < 50
+                lg
+                for lg in leagues
+                if lg.get("entry_rank", 0) > 0 and lg.get("entry_rank", 999999) < 50
             ]
 
         if not private_leagues:
             return []
 
         # Pick smallest league
-        private_leagues.sort(key=lambda l: l.get("entry_rank", 999999))
+        private_leagues.sort(key=lambda lg: lg.get("entry_rank", 999999))
         league_id = private_leagues[0]["id"]
 
         # Get standings
@@ -647,7 +699,7 @@ class LeagueEvaluator:
         ry = rank(y)
 
         d_sq = sum((rx[i] - ry[i]) ** 2 for i in range(n))
-        return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
+        return 1 - (6 * d_sq) / (n * (n**2 - 1))
 
     async def evaluate_league(self, gw_range: List[int]) -> Dict:
         """Evaluate how well the league's collective ownership predicts actual points.
@@ -658,7 +710,9 @@ class LeagueEvaluator:
 
         Then we correlate these to see if the league's wisdom predicts points.
         """
-        print(f"\n🔍 Evaluating league correlation over GW{min(gw_range)}-{max(gw_range)}...")
+        print(
+            f"\n🔍 Evaluating league correlation over GW{min(gw_range)}-{max(gw_range)}..."
+        )
 
         async with aiohttp.ClientSession() as session:
             # Find rivals
@@ -675,10 +729,10 @@ class LeagueEvaluator:
 
             batch_size = 20
             for i in range(0, len(players), batch_size):
-                batch = players[i:i + batch_size]
-                await asyncio.gather(*[
-                    self._fetch_player_gw_history(session, p.id) for p in batch
-                ])
+                batch = players[i : i + batch_size]
+                await asyncio.gather(
+                    *[self._fetch_player_gw_history(session, p.id) for p in batch]
+                )
                 if i + batch_size < len(players):
                     await asyncio.sleep(0.3)
 
@@ -753,7 +807,9 @@ class LeagueEvaluator:
 
         return result
 
-    def format_league_result(self, result: Dict, model_corr: float = 0.0, ownership_corr: float = 0.0) -> str:
+    def format_league_result(
+        self, result: Dict, model_corr: float = 0.0, ownership_corr: float = 0.0
+    ) -> str:
         """Format league evaluation results"""
         if not result:
             return "No league evaluation data available"
@@ -769,42 +825,54 @@ class LeagueEvaluator:
             f"  LEAGUE CORRELATION ANALYSIS - GW{gw_range[0]}-{gw_range[1]} ({window} weeks)",
             f"{'=' * 60}",
             f"\n  Data: {obs:,} player-GW observations from {rivals} rivals",
-            f"\n  CORRELATION COMPARISON:",
+            "\n  CORRELATION COMPARISON:",
             f"    Your League:      {league_corr:.3f}  (how well league picks predict points)",
         ]
 
         if ownership_corr > 0:
-            lines.append(f"    Global Ownership: {ownership_corr:.3f}  (wisdom of 11M+ managers)")
+            lines.append(
+                f"    Global Ownership: {ownership_corr:.3f}  (wisdom of 11M+ managers)"
+            )
 
         if model_corr > 0:
-            lines.append(f"    Our Model:        {model_corr:.3f}  (blended scoring algorithm)")
+            lines.append(
+                f"    Our Model:        {model_corr:.3f}  (blended scoring algorithm)"
+            )
 
         # Analysis
-        lines.append(f"\n  INTERPRETATION:")
+        lines.append("\n  INTERPRETATION:")
 
         if model_corr > 0:
             if model_corr > league_corr:
                 edge = model_corr - league_corr
                 pct = (edge / league_corr * 100) if league_corr > 0 else 0
-                lines.append(f"    ✓ Our model beats your league by +{edge:.3f} ({pct:.1f}%)")
-                lines.append(f"    → Use model rankings to find edges your rivals miss")
+                lines.append(
+                    f"    ✓ Our model beats your league by +{edge:.3f} ({pct:.1f}%)"
+                )
+                lines.append("    → Use model rankings to find edges your rivals miss")
             else:
                 gap = league_corr - model_corr
                 pct = (gap / model_corr * 100) if model_corr > 0 else 0
                 lines.append(f"    ⚠ Your league is {pct:.1f}% better than our model!")
-                lines.append(f"    → Tough competition - differentials are crucial")
-                lines.append(f"    → Focus on players the league is ignoring")
+                lines.append("    → Tough competition - differentials are crucial")
+                lines.append("    → Focus on players the league is ignoring")
 
         if ownership_corr > 0:
             if league_corr > ownership_corr:
                 edge = league_corr - ownership_corr
                 pct = (edge / ownership_corr * 100) if ownership_corr > 0 else 0
-                lines.append(f"\n    Your league ({league_corr:.3f}) beats global ownership ({ownership_corr:.3f})")
-                lines.append(f"    These are skilled managers - matching them isn't enough")
+                lines.append(
+                    f"\n    Your league ({league_corr:.3f}) beats global ownership ({ownership_corr:.3f})"
+                )
+                lines.append(
+                    "    These are skilled managers - matching them isn't enough"
+                )
             else:
                 gap = ownership_corr - league_corr
                 pct = (gap / league_corr * 100) if league_corr > 0 else 0
-                lines.append(f"\n    Global ownership ({ownership_corr:.3f}) beats your league ({league_corr:.3f})")
-                lines.append(f"    Your rivals make suboptimal picks - exploit this!")
+                lines.append(
+                    f"\n    Global ownership ({ownership_corr:.3f}) beats your league ({league_corr:.3f})"
+                )
+                lines.append("    Your rivals make suboptimal picks - exploit this!")
 
         return "\n".join(lines)

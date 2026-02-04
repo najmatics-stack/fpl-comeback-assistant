@@ -10,11 +10,6 @@ import asyncio
 import sys
 from typing import List, Optional, Set
 
-# Version and model info
-VERSION = "1.0.0"
-MODEL_NAME = "ians-model"
-MODEL_DESCRIPTION = "Pure ownership (0.283 corr) + Mirror Ian Foster (#9, most consistent manager)"
-
 import config
 from data.fpl_api import FPLDataFetcher
 from data.fpl_actions import FPLActions
@@ -28,68 +23,91 @@ from analysis.evaluator import ModelEvaluator
 from analysis.comparative_backtest import ComparativeBacktester
 from analysis.league_spy import LeagueSpy
 from analysis.mirror_manager import (
-    analyze_mirror, format_mirror_analysis,
-    get_ian_weekly_moves, MIRROR_MANAGER_NAME,
-    BudgetMirrorCandidate, find_budget_mirror_targets,
+    analyze_mirror,
+    format_mirror_analysis,
+    get_ian_weekly_moves,
+    BudgetMirrorCandidate,
+    find_budget_mirror_targets,
 )
-from output.recommendations import RecommendationEngine, TransferPlan, TransferRecommendation, CaptainPick
+from output.recommendations import (
+    RecommendationEngine,
+    TransferPlan,
+    TransferRecommendation,
+    CaptainPick,
+)
+
+# Version and model info
+VERSION = "1.0.0"
+MODEL_NAME = "ians-model"
+MODEL_DESCRIPTION = (
+    "Pure ownership (0.283 corr) + Mirror Ian Foster (#9, most consistent manager)"
+)
 
 
 # ── ANSI Color Helpers ──────────────────────────────────────
 # Works in Ghostty, iTerm2, and any modern terminal.
 class C:
     """ANSI color codes for terminal output."""
-    RESET   = "\033[0m"
-    BOLD    = "\033[1m"
-    DIM     = "\033[2m"
+
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
     # Foreground
-    RED     = "\033[31m"
-    GREEN   = "\033[32m"
-    YELLOW  = "\033[33m"
-    BLUE    = "\033[34m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    BLUE = "\033[34m"
     MAGENTA = "\033[35m"
-    CYAN    = "\033[36m"
-    WHITE   = "\033[37m"
+    CYAN = "\033[36m"
+    WHITE = "\033[37m"
     # Bright foreground
-    BRED    = "\033[91m"
-    BGREEN  = "\033[92m"
+    BRED = "\033[91m"
+    BGREEN = "\033[92m"
     BYELLOW = "\033[93m"
-    BBLUE   = "\033[94m"
-    BMAGENTA= "\033[95m"
-    BCYAN   = "\033[96m"
+    BBLUE = "\033[94m"
+    BMAGENTA = "\033[95m"
+    BCYAN = "\033[96m"
 
 
 def c_header(text: str) -> str:
     """Bold cyan for section headers / phase titles."""
     return f"{C.BOLD}{C.BCYAN}{text}{C.RESET}"
 
+
 def c_success(text: str) -> str:
     """Green for success messages."""
     return f"{C.BGREEN}{text}{C.RESET}"
+
 
 def c_warn(text: str) -> str:
     """Yellow for warnings."""
     return f"{C.BYELLOW}{text}{C.RESET}"
 
+
 def c_error(text: str) -> str:
     """Red for errors."""
     return f"{C.BRED}{text}{C.RESET}"
+
 
 def c_debug(text: str) -> str:
     """Dim grey for debug/progress output."""
     return f"{C.DIM}{text}{C.RESET}"
 
+
 def c_label(text: str) -> str:
     """Bold white for labels (player names, option keys)."""
     return f"{C.BOLD}{text}{C.RESET}"
+
 
 def c_value(text: str) -> str:
     """Magenta for important values (prices, scores, ranks)."""
     return f"{C.BMAGENTA}{text}{C.RESET}"
 
+
 def c_prompt(text: str) -> str:
     """Bold pink on dark background for user prompts — unmissable."""
     return f"\033[1m\033[38;5;205m\033[48;5;53m{text}\033[0m"
+
 
 def c_option(text: str) -> str:
     """Blue for selectable options."""
@@ -98,6 +116,7 @@ def c_option(text: str) -> str:
 
 class UserCancelled(Exception):
     """Raised when the user types 'q' or 'quit' at any prompt."""
+
     pass
 
 
@@ -133,7 +152,14 @@ def parse_args():
     parser.add_argument(
         "--chips",
         nargs="+",
-        choices=["wildcard", "free_hit", "triple_captain", "bench_boost", "all", "none"],
+        choices=[
+            "wildcard",
+            "free_hit",
+            "triple_captain",
+            "bench_boost",
+            "all",
+            "none",
+        ],
         help="Available chips (default: all)",
         default=["all"],
     )
@@ -323,7 +349,11 @@ def prompt_settings() -> dict:
         f"risk={settings['risk']}"
     )
 
-    choice = checked_input(c_prompt("\nAdjust? [Enter=skip, s=settings, q=quit]: ")).strip().lower()
+    choice = (
+        checked_input(c_prompt("\nAdjust? [Enter=skip, s=settings, q=quit]: "))
+        .strip()
+        .lower()
+    )
     if choice != "s":
         return settings
 
@@ -333,7 +363,9 @@ def prompt_settings() -> dict:
         for i, key in enumerate(setting_keys, 1):
             print(f"  {i}. {key} = {settings[key]}")
         print()
-        cmd = checked_input("Change (<number> <value>, or Enter=done, q=quit): ").strip()
+        cmd = checked_input(
+            "Change (<number> <value>, or Enter=done, q=quit): "
+        ).strip()
         if not cmd:
             break
 
@@ -426,11 +458,13 @@ def prompt_locked_players(
         player = fpl.get_player(pid)
         if player:
             sp = scorer.score_player(player)
-            positions[player.position].append({
-                "id": pid,
-                "player": player,
-                "scored": sp,
-            })
+            positions[player.position].append(
+                {
+                    "id": pid,
+                    "player": player,
+                    "scored": sp,
+                }
+            )
             if sp.availability == "injured" or sp.availability == "suspended":
                 injury_count += 1
             elif sp.availability == "doubt":
@@ -460,7 +494,9 @@ def prompt_locked_players(
                 avail_detail = ""
                 if sp.availability == "injured":
                     avail_icon = "❌"
-                    avail_detail = f" [OUT: {sp.injury_details or player.news or 'Injured'}]"
+                    avail_detail = (
+                        f" [OUT: {sp.injury_details or player.news or 'Injured'}]"
+                    )
                 elif sp.availability == "suspended":
                     avail_icon = "🚫"
                     avail_detail = f" [SUSPENDED: {player.news or 'Red card'}]"
@@ -468,10 +504,14 @@ def prompt_locked_players(
                     # Show chance of playing if available
                     if player.chance_of_playing is not None:
                         avail_icon = "⚠️"
-                        avail_detail = f" [{player.chance_of_playing}%: {player.news or 'Doubt'}]"
+                        avail_detail = (
+                            f" [{player.chance_of_playing}%: {player.news or 'Doubt'}]"
+                        )
                     else:
                         avail_icon = "⚠️"
-                        avail_detail = f" [DOUBT: {sp.injury_details or player.news or 'Knock'}]"
+                        avail_detail = (
+                            f" [DOUBT: {sp.injury_details or player.news or 'Knock'}]"
+                        )
                 else:
                     avail_icon = "✓"
 
@@ -482,7 +522,9 @@ def prompt_locked_players(
                 numbered.append(p["id"])
                 idx += 1
 
-    print("\n  Lock players you don't want to sell (injured players shown for awareness).")
+    print(
+        "\n  Lock players you don't want to sell (injured players shown for awareness)."
+    )
     choice = checked_input(c_prompt("  [Enter=none, e.g. 1,3,5, q=quit]: ")).strip()
 
     if not choice:
@@ -555,13 +597,15 @@ def _build_mirror_transfers(
         pos_outs.sort(key=lambda sp: sp.overall_score)
         pos_ins.sort(key=lambda sp: sp.overall_score, reverse=True)
         for out_sp, in_sp in zip(pos_outs, pos_ins):
-            transfers.append(TransferRecommendation(
-                player_out=out_sp,
-                player_in=in_sp,
-                score_gain=in_sp.overall_score - out_sp.overall_score,
-                price_diff=in_sp.player.price - out_sp.player.price,
-                reason=reason,
-            ))
+            transfers.append(
+                TransferRecommendation(
+                    player_out=out_sp,
+                    player_in=in_sp,
+                    score_gain=in_sp.overall_score - out_sp.overall_score,
+                    price_diff=in_sp.player.price - out_sp.player.price,
+                    reason=reason,
+                )
+            )
 
     return transfers
 
@@ -593,7 +637,9 @@ def _budget_constrained_mirror(
     bench_indices = set(range(11, 15))
 
     def squad_cost(squad: List[int]) -> float:
-        return sum((fpl.get_player(pid).price if fpl.get_player(pid) else 0.0) for pid in squad)
+        return sum(
+            (fpl.get_player(pid).price if fpl.get_player(pid) else 0.0) for pid in squad
+        )
 
     cost = squad_cost(adjusted_squad)
     if cost <= total_budget + 0.05:
@@ -644,11 +690,21 @@ def _budget_constrained_mirror(
 
         team_counts[player.team_id] = team_counts.get(player.team_id, 1) - 1
         if chosen_player.team_id != player.team_id:
-            team_counts[chosen_player.team_id] = team_counts.get(chosen_player.team_id, 0) + 1
+            team_counts[chosen_player.team_id] = (
+                team_counts.get(chosen_player.team_id, 0) + 1
+            )
 
         saving = player.price - chosen_player.price
         cost -= saving
-        swaps_made.append((player.web_name, chosen_player.web_name, player.price, chosen_player.price, saving))
+        swaps_made.append(
+            (
+                player.web_name,
+                chosen_player.web_name,
+                player.price,
+                chosen_player.price,
+                saving,
+            )
+        )
 
     # ── PASS 1: Bench downgrades (automatic, cheapest option) ──
     bench_targets = []
@@ -676,17 +732,31 @@ def _budget_constrained_mirror(
         chosen = valid[0]
         cp = chosen.player
         saving = player.price - cp.price
-        print(c_debug(f"  Bench: {player.web_name} (£{player.price}m) → {cp.web_name} (£{cp.price}m)  [saves £{saving:.1f}m]"))
+        print(
+            c_debug(
+                f"  Bench: {player.web_name} (£{player.price}m) → {cp.web_name} (£{cp.price}m)  [saves £{saving:.1f}m]"
+            )
+        )
         _do_swap(pid, player, cp)
 
     if cost <= total_budget + 0.05:
         if swaps_made:
-            print(c_success(f"\n  ✓ Bench downgrades only ({len(swaps_made)} swaps) — starting 11 untouched"))
-            print(c_debug(f"  Adjusted cost: £{cost:.1f}m (budget: £{total_budget:.1f}m)"))
+            print(
+                c_success(
+                    f"\n  ✓ Bench downgrades only ({len(swaps_made)} swaps) — starting 11 untouched"
+                )
+            )
+            print(
+                c_debug(f"  Adjusted cost: £{cost:.1f}m (budget: £{total_budget:.1f}m)")
+            )
         return adjusted_squad
 
     # ── PASS 2: Starter downgrades (interactive, user picks) ──
-    print(c_warn(f"\n  Bench downgrades saved £{sum(s[4] for s in swaps_made):.1f}m but still £{cost - total_budget:.1f}m over."))
+    print(
+        c_warn(
+            f"\n  Bench downgrades saved £{sum(s[4] for s in swaps_made):.1f}m but still £{cost - total_budget:.1f}m over."
+        )
+    )
     print(c_warn("  Need to downgrade starter(s):"))
 
     starter_targets = []
@@ -715,12 +785,18 @@ def _budget_constrained_mirror(
             continue
 
         shortfall = cost - total_budget
-        print(f"\n  Downgrade needed: {c_label(player.web_name)} ({player.position}, £{player.price}m, score {scored.overall_score:.1f})")
-        print(f"  Still {c_warn(f'£{shortfall:.1f}m')} over budget. Pick a replacement:")
+        print(
+            f"\n  Downgrade needed: {c_label(player.web_name)} ({player.position}, £{player.price}m, score {scored.overall_score:.1f})"
+        )
+        print(
+            f"  Still {c_warn(f'£{shortfall:.1f}m')} over budget. Pick a replacement:"
+        )
         for i, cand in enumerate(valid, 1):
             cp = cand.player
             saving = player.price - cp.price
-            print(f"    {i}. {cp.web_name:15} ({cp.team}) £{cp.price}m | Score: {cand.overall_score:.1f} | saves £{saving:.1f}m")
+            print(
+                f"    {i}. {cp.web_name:15} ({cp.team}) £{cp.price}m | Score: {cand.overall_score:.1f} | saves £{saving:.1f}m"
+            )
 
         pick = checked_input(c_prompt(f"  [1-{len(valid)}, Enter=1, q=quit]: ")).strip()
         try:
@@ -734,21 +810,33 @@ def _budget_constrained_mirror(
         _do_swap(pid, player, chosen.player)
 
     if cost > total_budget + 0.05:
-        print(c_error(f"  ⚠️  Could not fit squad within budget (£{cost:.1f}m > £{total_budget:.1f}m)"))
+        print(
+            c_error(
+                f"  ⚠️  Could not fit squad within budget (£{cost:.1f}m > £{total_budget:.1f}m)"
+            )
+        )
         return None
 
     # Final summary
-    bench_swaps = [s for s in swaps_made if s[0] in [bt[1].web_name for bt in bench_targets]]
+    bench_swaps = [
+        s for s in swaps_made if s[0] in [bt[1].web_name for bt in bench_targets]
+    ]
     starter_swaps = [s for s in swaps_made if s not in bench_swaps]
     print(f"\n  Budget adjustments ({len(swaps_made)} downgrades):")
     if bench_swaps:
         print(c_debug(f"  Bench ({len(bench_swaps)}):"))
         for orig, repl, orig_price, repl_price, saving in bench_swaps:
-            print(c_debug(f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]"))
+            print(
+                c_debug(
+                    f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]"
+                )
+            )
     if starter_swaps:
         print(c_warn(f"  Starters ({len(starter_swaps)}):"))
         for orig, repl, orig_price, repl_price, saving in starter_swaps:
-            print(f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]")
+            print(
+                f"    {orig} (£{orig_price}m) → {repl} (£{repl_price}m)  [saves £{saving:.1f}m]"
+            )
     print(f"  Adjusted squad cost: £{cost:.1f}m (budget: £{total_budget:.1f}m)")
 
     return adjusted_squad
@@ -778,7 +866,9 @@ def prompt_free_hit_squad(
     # Calculate total budget — prefer selling prices (accurate) over market prices
     if budget_info:
         total_budget = budget_info["total_budget"]
-        print(f"\n  Budget: £{total_budget:.1f}m (selling prices + £{budget_info['bank']:.1f}m bank)")
+        print(
+            f"\n  Budget: £{total_budget:.1f}m (selling prices + £{budget_info['bank']:.1f}m bank)"
+        )
     else:
         total_budget = 0.0
         for pid in squad_ids:
@@ -787,11 +877,15 @@ def prompt_free_hit_squad(
                 total_budget += player.price
         if total_budget < 50.0:
             total_budget = 100.0  # Fallback
-        print(f"\n  Budget: £{total_budget:.1f}m (market prices — selling prices may be lower)")
+        print(
+            f"\n  Budget: £{total_budget:.1f}m (market prices — selling prices may be lower)"
+        )
         print("  ⚠️  Could not fetch selling prices; actual budget may differ")
 
     # Helper to print a squad grouped by position
-    def _print_squad(squad: List[int], captain_id: Optional[int] = None, indent: str = "    "):
+    def _print_squad(
+        squad: List[int], captain_id: Optional[int] = None, indent: str = "    "
+    ):
         for pos in ["GKP", "DEF", "MID", "FWD"]:
             pos_players = []
             for pid in squad:
@@ -841,23 +935,31 @@ def prompt_free_hit_squad(
             cost_str = c_warn(f"£{cand.squad_cost:.1f}m") + c_warn(f" (+£{over:.1f}m)")
         else:
             cost_str = c_success(f"£{cand.squad_cost:.1f}m")
-        print(c_option(f"  [{idx}] ") + c_label(f"#{cand.rank} \"{cand.team_name}\"") + f" by {cand.manager_name}")
-        print(f"      Points: {c_value(f'{cand.total_points:,}')} | GW: {c_value(str(cand.gw_points))} | Cost: {cost_str} | Captain: {c_label(cap_name)}")
-        print(f"      Overlap: {cand.overlap_count}/15 ({cand.transfers_needed} transfers)")
+        print(
+            c_option(f"  [{idx}] ")
+            + c_label(f'#{cand.rank} "{cand.team_name}"')
+            + f" by {cand.manager_name}"
+        )
+        print(
+            f"      Points: {c_value(f'{cand.total_points:,}')} | GW: {c_value(str(cand.gw_points))} | Cost: {cost_str} | Captain: {c_label(cap_name)}"
+        )
+        print(
+            f"      Overlap: {cand.overlap_count}/15 ({cand.transfers_needed} transfers)"
+        )
         _print_squad(cand.squad, cand.captain, indent="      ")
         print()
 
     num_idx = 1
     if fits_budget:
-        print(c_header(f"\n  --- FITS YOUR BUDGET (No Downgrades) ---"))
+        print(c_header("\n  --- FITS YOUR BUDGET (No Downgrades) ---"))
         print(c_debug(f"  Budget: £{total_budget:.1f}m\n"))
         for cand in fits_budget:
             _print_candidate(num_idx, cand)
             num_idx += 1
 
     if needs_downgrade:
-        print(c_header(f"\n  --- NEEDS MINOR DOWNGRADES ---"))
-        print(c_debug(f"  Slightly over budget — will auto-pick cheaper alternatives\n"))
+        print(c_header("\n  --- NEEDS MINOR DOWNGRADES ---"))
+        print(c_debug("  Slightly over budget — will auto-pick cheaper alternatives\n"))
         for cand in needs_downgrade:
             _print_candidate(num_idx, cand)
             num_idx += 1
@@ -868,12 +970,16 @@ def prompt_free_hit_squad(
         ian_transfers = len(ian_set - current_set)
         if ian_over_budget:
             shortfall = ian_cost - total_budget
-            print(c_header(f"  --- IAN FOSTER (Needs Downgrades) ---"))
-            print(f"  Cost: {c_warn(f'£{ian_cost:.1f}m')} ({c_warn(f'£{shortfall:.1f}m over budget')}) | Transfers: {ian_transfers} (will auto-downgrade)")
+            print(c_header("  --- IAN FOSTER (Needs Downgrades) ---"))
+            print(
+                f"  Cost: {c_warn(f'£{ian_cost:.1f}m')} ({c_warn(f'£{shortfall:.1f}m over budget')}) | Transfers: {ian_transfers} (will auto-downgrade)"
+            )
         else:
-            print(c_header(f"\n  --- IAN FOSTER (Recommended) ---"))
-            print(f"  Most consistent manager, never below #1,248")
-            print(f"  Cost: {c_success(f'£{ian_cost:.1f}m')} (within budget) | Transfers: {ian_transfers}")
+            print(c_header("\n  --- IAN FOSTER (Recommended) ---"))
+            print("  Most consistent manager, never below #1,248")
+            print(
+                f"  Cost: {c_success(f'£{ian_cost:.1f}m')} (within budget) | Transfers: {ian_transfers}"
+            )
         _print_squad(ian_squad, ian_captain, indent="    ")
         print()
 
@@ -899,13 +1005,23 @@ def prompt_free_hit_squad(
 
         # If candidate is over real budget, auto-downgrade
         if cand.squad_cost > total_budget + 0.05:
-            print(c_warn(f"\n  Squad is £{cand.squad_cost - total_budget:.1f}m over budget — picking downgrades..."))
+            print(
+                c_warn(
+                    f"\n  Squad is £{cand.squad_cost - total_budget:.1f}m over budget — picking downgrades..."
+                )
+            )
             adjusted = _budget_constrained_mirror(
-                target_squad, squad_ids, total_budget,
-                recommender.scorer, fpl, cand.captain,
+                target_squad,
+                squad_ids,
+                total_budget,
+                recommender.scorer,
+                fpl,
+                cand.captain,
             )
             if adjusted is None:
-                print(c_error("  ❌ Cannot fit squad within budget even with downgrades"))
+                print(
+                    c_error("  ❌ Cannot fit squad within budget even with downgrades")
+                )
                 print(c_warn("     Falling back to model's squad..."))
                 choice = "m"
             else:
@@ -913,33 +1029,63 @@ def prompt_free_hit_squad(
 
         if choice != "m":
             transfers = _build_mirror_transfers(
-                recommender, fpl, squad_ids, target_squad, reason=reason,
+                recommender,
+                fpl,
+                squad_ids,
+                target_squad,
+                reason=reason,
             )
-            print(c_success(f"\n  ✓ Using #{cand.rank} {cand.manager_name}'s squad ({len(transfers)} transfers)"))
+            print(
+                c_success(
+                    f"\n  ✓ Using #{cand.rank} {cand.manager_name}'s squad ({len(transfers)} transfers)"
+                )
+            )
             return transfers, target_squad
 
     # Handle Ian selection
     if choice == "i" and has_ian:
         if ian_over_budget:
             adjusted = _budget_constrained_mirror(
-                ian_squad, squad_ids, total_budget,
-                recommender.scorer, fpl, ian_captain,
+                ian_squad,
+                squad_ids,
+                total_budget,
+                recommender.scorer,
+                fpl,
+                ian_captain,
             )
             if adjusted is None:
-                print(c_error("  ❌ Cannot fit Ian's squad within budget even with downgrades"))
+                print(
+                    c_error(
+                        "  ❌ Cannot fit Ian's squad within budget even with downgrades"
+                    )
+                )
                 print(c_warn("     Falling back to model's squad..."))
                 choice = "m"
             else:
                 transfers = _build_mirror_transfers(
-                    recommender, fpl, squad_ids, adjusted,
+                    recommender,
+                    fpl,
+                    squad_ids,
+                    adjusted,
                 )
-                print(c_success(f"\n  ✓ Using Ian Foster's squad with downgrades ({len(transfers)} transfers)"))
+                print(
+                    c_success(
+                        f"\n  ✓ Using Ian Foster's squad with downgrades ({len(transfers)} transfers)"
+                    )
+                )
                 return transfers, adjusted
         else:
             transfers = _build_mirror_transfers(
-                recommender, fpl, squad_ids, ian_squad,
+                recommender,
+                fpl,
+                squad_ids,
+                ian_squad,
             )
-            print(c_success(f"\n  ✓ Using Ian Foster's squad ({len(transfers)} transfers)"))
+            print(
+                c_success(
+                    f"\n  ✓ Using Ian Foster's squad ({len(transfers)} transfers)"
+                )
+            )
             return transfers, ian_squad
 
     if choice == "s":
@@ -962,7 +1108,7 @@ def prompt_free_hit_squad(
     print(recommender.format_free_hit_squad(squad, transfers, total_budget))
 
     while True:
-        print(f"\n  [Enter=accept, e=edit, s=skip, q=quit]: ", end="")
+        print("\n  [Enter=accept, e=edit, s=skip, q=quit]: ", end="")
         choice = checked_input().strip().lower()
 
         if choice == "s":
@@ -983,7 +1129,9 @@ def prompt_free_hit_squad(
                 print()
                 for i, sp in enumerate(numbered, 1):
                     p = sp.player
-                    print(f"   {i:2}. {p.position} {p.web_name:15} ({p.team}) £{p.price}m | Score: {sp.overall_score:.1f}")
+                    print(
+                        f"   {i:2}. {p.position} {p.web_name:15} ({p.team}) £{p.price}m | Score: {sp.overall_score:.1f}"
+                    )
 
                 cmd = checked_input("\nedit-fh> ").strip()
                 if not cmd or cmd == "done":
@@ -1014,22 +1162,37 @@ def prompt_free_hit_squad(
                             continue
 
                         # Check 3-per-team (excluding old player)
-                        temp_ids = [sp.player.id for sp in numbered if sp.player.id != old_sp.player.id]
-                        team_count = sum(1 for pid in temp_ids if fpl.get_player(pid) and fpl.get_player(pid).team_id == new_player.team_id)
+                        temp_ids = [
+                            sp.player.id
+                            for sp in numbered
+                            if sp.player.id != old_sp.player.id
+                        ]
+                        team_count = sum(
+                            1
+                            for pid in temp_ids
+                            if fpl.get_player(pid)
+                            and fpl.get_player(pid).team_id == new_player.team_id
+                        )
                         if team_count >= 3:
-                            print(f"  {new_player.web_name} would exceed 3-per-team limit")
+                            print(
+                                f"  {new_player.web_name} would exceed 3-per-team limit"
+                            )
                             continue
 
                         # Check budget
                         old_cost = sum(sp.player.price for sp in numbered)
                         new_cost = old_cost - old_sp.player.price + new_player.price
                         if new_cost > total_budget:
-                            print(f"  £{new_player.price}m too expensive (would need £{new_cost:.1f}m, budget £{total_budget:.1f}m)")
+                            print(
+                                f"  £{new_player.price}m too expensive (would need £{new_cost:.1f}m, budget £{total_budget:.1f}m)"
+                            )
                             continue
 
                         new_scored = recommender.scorer.score_player(new_player)
                         numbered[idx] = new_scored
-                        print(f"  Swapped: {old_sp.player.web_name} -> {new_player.web_name}")
+                        print(
+                            f"  Swapped: {old_sp.player.web_name} -> {new_player.web_name}"
+                        )
 
                     except (ValueError, IndexError):
                         print("  Usage: swap <number> <player name>")
@@ -1039,8 +1202,12 @@ def prompt_free_hit_squad(
                     player = recommender.find_player_by_name(name_query)
                     if player:
                         sp = recommender.scorer.score_player(player)
-                        fixture_run = recommender.fixtures.get_fixture_run(player.team_id)
-                        next_fix = fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                        fixture_run = recommender.fixtures.get_fixture_run(
+                            player.team_id
+                        )
+                        next_fix = (
+                            fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                        )
                         print(
                             f"  {player.web_name} ({player.team}) {player.position} "
                             f"£{player.price}m | Form: {player.form} | "
@@ -1081,13 +1248,15 @@ def prompt_free_hit_squad(
                 for out_sp, in_sp in zip(pos_outs, pos_ins):
                     gain = in_sp.overall_score - out_sp.overall_score
                     price_diff = in_sp.player.price - out_sp.player.price
-                    transfers.append(TransferRecommendation(
-                        player_out=out_sp,
-                        player_in=in_sp,
-                        score_gain=gain,
-                        price_diff=price_diff,
-                        reason="free hit rebuild",
-                    ))
+                    transfers.append(
+                        TransferRecommendation(
+                            player_out=out_sp,
+                            player_in=in_sp,
+                            score_gain=gain,
+                            price_diff=price_diff,
+                            reason="free hit rebuild",
+                        )
+                    )
 
             print(recommender.format_free_hit_squad(squad, transfers, total_budget))
             continue  # Show squad again for accept/skip
@@ -1171,7 +1340,9 @@ def prompt_transfer_plan(
                 idx = int(parts[1]) - 1
                 if 0 <= idx < len(chosen_transfers):
                     removed = chosen_transfers.pop(idx)
-                    print(f"  Dropped: {removed.player_out.player.web_name} -> {removed.player_in.player.web_name}")
+                    print(
+                        f"  Dropped: {removed.player_out.player.web_name} -> {removed.player_in.player.web_name}"
+                    )
                 else:
                     print(f"  Invalid number (1-{len(chosen_transfers)})")
             except ValueError:
@@ -1203,7 +1374,9 @@ def prompt_transfer_plan(
                 if recommender._would_violate_rules(
                     new_player.id, old_tr.player_out.player.id, squad_ids, pending
                 ):
-                    print(f"  {new_player.web_name} would violate FPL rules (3-per-team/position limits)")
+                    print(
+                        f"  {new_player.web_name} would violate FPL rules (3-per-team/position limits)"
+                    )
                     continue
 
                 new_scored = recommender.scorer.score_player(new_player)
@@ -1257,7 +1430,7 @@ def prompt_transfer_plan(
             if recommender._would_violate_rules(
                 in_player.id, out_player.id, squad_ids, chosen_transfers
             ):
-                print(f"  Would violate FPL rules")
+                print("  Would violate FPL rules")
                 continue
 
             out_scored = recommender.scorer.score_player(out_player)
@@ -1265,16 +1438,17 @@ def prompt_transfer_plan(
             gain = in_scored.overall_score - out_scored.overall_score
             price_diff = in_player.price - out_player.price
 
-            chosen_transfers.append(TransferRecommendation(
-                player_out=out_scored,
-                player_in=in_scored,
-                score_gain=gain,
-                price_diff=price_diff,
-                reason="manual add",
-            ))
+            chosen_transfers.append(
+                TransferRecommendation(
+                    player_out=out_scored,
+                    player_in=in_scored,
+                    score_gain=gain,
+                    price_diff=price_diff,
+                    reason="manual add",
+                )
+            )
             print(
-                f"  Added: {out_player.web_name} -> {in_player.web_name} "
-                f"[+{gain:.1f}]"
+                f"  Added: {out_player.web_name} -> {in_player.web_name} [+{gain:.1f}]"
             )
 
         elif verb == "show" and len(parts) >= 2:
@@ -1293,7 +1467,9 @@ def prompt_transfer_plan(
                 print(f"  Player '{name_query}' not found")
 
         else:
-            print("  Commands: drop <n>, swap <n> <name>, add <out> <in>, show <name>, done")
+            print(
+                "  Commands: drop <n>, swap <n> <name>, add <out> <in>, show <name>, done"
+            )
 
     return chosen_transfers
 
@@ -1315,10 +1491,11 @@ def prompt_captain(
     print("\n  Top captain picks:")
     for i, cp in enumerate(captain_picks, 1):
         p = cp.player.player
-        avail = "" if cp.player.availability == "fit" else f" [{cp.player.availability}]"
+        avail = (
+            "" if cp.player.availability == "fit" else f" [{cp.player.availability}]"
+        )
         print(
-            f"   {i}. {p.web_name} ({p.team}) - "
-            f"{cp.expected_points:.1f} exp pts{avail}"
+            f"   {i}. {p.web_name} ({p.team}) - {cp.expected_points:.1f} exp pts{avail}"
         )
         print(f"      vs {cp.fixture_info} | {cp.reason}")
 
@@ -1338,7 +1515,7 @@ def prompt_captain(
             if player:
                 print(f"  {player.web_name} not in squad, using #1")
             else:
-                print(f"  Player not found, using #1")
+                print("  Player not found, using #1")
             captain_id = captain_picks[0].player.player.id
     elif choice.isdigit() and 1 <= int(choice) <= len(captain_picks):
         idx = int(choice) - 1
@@ -1357,7 +1534,10 @@ def prompt_captain(
         )
         for i, cp in enumerate(remaining, 1):
             p = cp.player.player
-            print(f"\n   {i}. {p.web_name} ({p.team}) - {cp.expected_points:.1f} exp", end="")
+            print(
+                f"\n   {i}. {p.web_name} ({p.team}) - {cp.expected_points:.1f} exp",
+                end="",
+            )
         print()
         vc_choice = checked_input("  > ").strip()
         if vc_choice.isdigit() and 1 <= int(vc_choice) <= len(remaining):
@@ -1365,7 +1545,11 @@ def prompt_captain(
         else:
             vc_id = remaining[0].player.player.id
         vc_name = next(
-            (cp.player.player.web_name for cp in remaining if cp.player.player.id == vc_id),
+            (
+                cp.player.player.web_name
+                for cp in remaining
+                if cp.player.player.id == vc_id
+            ),
             "?",
         )
         print(f"  Vice captain: {vc_name}")
@@ -1377,8 +1561,14 @@ def prompt_captain(
 
 # Valid FPL formations: (DEF, MID, FWD)
 VALID_FORMATIONS = [
-    (3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1),
-    (5, 3, 2), (5, 4, 1), (5, 2, 3),
+    (3, 4, 3),
+    (3, 5, 2),
+    (4, 3, 3),
+    (4, 4, 2),
+    (4, 5, 1),
+    (5, 3, 2),
+    (5, 4, 1),
+    (5, 2, 3),
 ]
 
 
@@ -1416,7 +1606,6 @@ def _best_lineup(
 
     best_score = -1
     best_starting = None
-    best_bench = None
 
     for n_def, n_mid, n_fwd in VALID_FORMATIONS:
         if n_def > len(defs) or n_mid > len(mids) or n_fwd > len(fwds) or len(gkps) < 1:
@@ -1495,13 +1684,19 @@ def prompt_lineup(
                 p = fpl.get_player(pid)
                 if p and p.position == pos:
                     sp = scorer.score_player(p)
-                    cap = " (C)" if pid == captain_id else (" (V)" if pid == vc_id else "")
+                    cap = (
+                        " (C)"
+                        if pid == captain_id
+                        else (" (V)" if pid == vc_id else "")
+                    )
                     pos_players.append((idx, p, sp, cap))
                     idx += 1
             if pos_players:
                 print(f"  {c_debug(pos)}:")
                 for i, p, sp, cap in pos_players:
-                    print(f"   {i:2}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_value(f'{sp.overall_score:.1f}')}{cap}")
+                    print(
+                        f"   {i:2}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_value(f'{sp.overall_score:.1f}')}{cap}"
+                    )
 
         # Formation
         pos_counts = {}
@@ -1517,12 +1712,14 @@ def prompt_lineup(
             p = fpl.get_player(pid)
             if p:
                 sp = scorer.score_player(p)
-                print(f"   {i}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_debug(f'{sp.overall_score:.1f}')}")
+                print(
+                    f"   {i}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_debug(f'{sp.overall_score:.1f}')}"
+                )
 
     _display_lineup(starting, bench)
 
     while True:
-        print(c_prompt(f"\n  [Enter=accept, swap <a> <b>, s=skip, q=quit]: "), end="")
+        print(c_prompt("\n  [Enter=accept, swap <a> <b>, s=skip, q=quit]: "), end="")
         choice = checked_input().strip().lower()
 
         if choice == "s":
@@ -1530,7 +1727,7 @@ def prompt_lineup(
             return None
 
         if not choice:
-            print(c_success(f"  ✓ Lineup accepted"))
+            print(c_success("  ✓ Lineup accepted"))
             return starting, bench, captain_id, vc_id
 
         if choice.startswith("swap"):
@@ -1543,7 +1740,7 @@ def prompt_lineup(
                 b_idx = int(parts[2])
                 all_players = starting + bench
                 if a_idx < 1 or a_idx > 15 or b_idx < 1 or b_idx > 15:
-                    print(f"  Numbers must be 1-15")
+                    print("  Numbers must be 1-15")
                     continue
 
                 a_pid = all_players[a_idx - 1]
@@ -1569,7 +1766,11 @@ def prompt_lineup(
                 n_fwd = pos_counts.get("FWD", 0)
 
                 if n_gkp != 1:
-                    print(c_warn(f"  Invalid: need exactly 1 GKP in starting XI, got {n_gkp}"))
+                    print(
+                        c_warn(
+                            f"  Invalid: need exactly 1 GKP in starting XI, got {n_gkp}"
+                        )
+                    )
                     continue
                 if (n_def, n_mid, n_fwd) not in VALID_FORMATIONS:
                     print(c_warn(f"  Invalid formation: {n_def}-{n_mid}-{n_fwd}"))
@@ -1577,10 +1778,20 @@ def prompt_lineup(
 
                 starting = new_starting
                 # Enforce bench GKP at position 12 (FPL requirement)
-                new_bench.sort(key=lambda pid: (fpl.get_player(pid).position != "GKP" if fpl.get_player(pid) else True))
+                new_bench.sort(
+                    key=lambda pid: (
+                        fpl.get_player(pid).position != "GKP"
+                        if fpl.get_player(pid)
+                        else True
+                    )
+                )
                 bench = new_bench
-                a_name = fpl.get_player(a_pid).web_name if fpl.get_player(a_pid) else "?"
-                b_name = fpl.get_player(b_pid).web_name if fpl.get_player(b_pid) else "?"
+                a_name = (
+                    fpl.get_player(a_pid).web_name if fpl.get_player(a_pid) else "?"
+                )
+                b_name = (
+                    fpl.get_player(b_pid).web_name if fpl.get_player(b_pid) else "?"
+                )
                 print(c_success(f"  Swapped: {a_name} ↔ {b_name}"))
                 _display_lineup(starting, bench)
 
@@ -1663,7 +1874,9 @@ async def prompt_review_and_execute(
         use_wc = chip_value == "wildcard"
         use_fh = chip_value == "free_hit"
 
-        if not await fpl_actions.make_transfers(outs, ins, current_gw=current_gw, wildcard=use_wc, free_hit=use_fh):
+        if not await fpl_actions.make_transfers(
+            outs, ins, current_gw=current_gw, wildcard=use_wc, free_hit=use_fh
+        ):
             all_ok = False
 
     # Set captain
@@ -1725,7 +1938,9 @@ def display_model_performance():
 
         if model_corr and ownership_baseline:
             advantage = model_corr - ownership_baseline
-            pct = (advantage / ownership_baseline * 100) if ownership_baseline > 0 else 0
+            pct = (
+                (advantage / ownership_baseline * 100) if ownership_baseline > 0 else 0
+            )
 
             window_label = f"{window}-week" if window > 1 else "single-GW"
             print(f"\n📊 Model Performance ({window_label} evaluation):")
@@ -1778,11 +1993,13 @@ async def interactive_auto_mode(
 
             captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
 
-            print(f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}")
+            print(
+                f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}"
+            )
             print(f"  Transfers to match: {mirror_analysis.transfers_needed}")
 
             if mirror_analysis.transfers_needed > 0:
-                print(f"\n  Quick diff:")
+                print("\n  Quick diff:")
                 for pid in mirror_analysis.players_to_sell[:3]:
                     name = player_names.get(pid, f"ID:{pid}")
                     print(f"    OUT: {name}")
@@ -1795,15 +2012,19 @@ async def interactive_auto_mode(
                     print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
 
             if mirror_analysis.recommend_free_hit:
-                print(f"\n  ⚠️  Consider FREE HIT to mirror Ian ({mirror_analysis.transfers_needed} transfers)")
+                print(
+                    f"\n  ⚠️  Consider FREE HIT to mirror Ian ({mirror_analysis.transfers_needed} transfers)"
+                )
 
             print(f"\n  Ian's captain: {captain_name}")
 
             moves = await get_ian_weekly_moves(current_gw)
-            if moves and moves['transfers_in']:
-                print(f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}")
+            if moves and moves["transfers_in"]:
+                print(
+                    f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}"
+                )
 
-            print(f"\n  (Run --mirror for full analysis)")
+            print("\n  (Run --mirror for full analysis)")
     except Exception as e:
         print(f"  Could not fetch Ian's data: {e}")
 
@@ -1888,8 +2109,11 @@ async def interactive_auto_mode(
         if selected_chip == "free_hit":
             # Phase 1-FH: Free Hit squad builder with mirror options
             chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-                recommender, fpl, squad_ids,
-                ian_squad=ian_squad, ian_captain=ian_captain,
+                recommender,
+                fpl,
+                squad_ids,
+                ian_squad=ian_squad,
+                ian_captain=ian_captain,
                 budget_info=squad_budget_info,
                 budget_candidates=budget_candidates,
             )
@@ -1903,8 +2127,11 @@ async def interactive_auto_mode(
         elif selected_chip == "wildcard":
             # Wildcard uses same Free Hit flow with mirror options
             chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
-                recommender, fpl, squad_ids,
-                ian_squad=ian_squad, ian_captain=ian_captain,
+                recommender,
+                fpl,
+                squad_ids,
+                ian_squad=ian_squad,
+                ian_captain=ian_captain,
                 budget_info=squad_budget_info,
                 budget_candidates=budget_candidates,
             )
@@ -1946,12 +2173,17 @@ async def interactive_auto_mode(
         captain_picks = recommender.get_captain_picks(
             captain_squad_ids, limit=config.TOP_CAPTAINS
         )
-        captain_id, vc_id = prompt_captain(recommender, captain_picks, captain_squad_ids)
+        captain_id, vc_id = prompt_captain(
+            recommender, captain_picks, captain_squad_ids
+        )
 
         # Phase 3: Lineup (starting 11 + bench order)
         lineup_result = prompt_lineup(
-            fpl, recommender.scorer, captain_squad_ids,
-            captain_id=captain_id, vc_id=vc_id,
+            fpl,
+            recommender.scorer,
+            captain_squad_ids,
+            captain_id=captain_id,
+            vc_id=vc_id,
         )
 
         # Phase 4: Review and execute (reuses the existing authenticated session)
@@ -1962,8 +2194,12 @@ async def interactive_auto_mode(
 
         if logged_in:
             await prompt_review_and_execute(
-                fpl_actions, chosen_transfers,
-                captain_id, vc_id, chip_to_play, current_gw,
+                fpl_actions,
+                chosen_transfers,
+                captain_id,
+                vc_id,
+                chip_to_play,
+                current_gw,
                 lineup=lineup_result,
             )
         else:
@@ -1993,11 +2229,11 @@ async def main_async(args):
         return
 
     # Print version and model info
-    print(c_header(f"\n{'='*60}"))
+    print(c_header(f"\n{'=' * 60}"))
     print(c_header(f"  FPL Comeback Assistant v{VERSION}"))
     print(f"  Model: {c_value(MODEL_NAME)}")
     print(f"  {MODEL_DESCRIPTION}")
-    print(c_header(f"{'='*60}"))
+    print(c_header(f"{'=' * 60}"))
 
     print(c_debug("\n🔄 Fetching FPL data..."))
 
@@ -2037,7 +2273,7 @@ async def main_async(args):
             print(c_debug(f"   [debug] squad IDs (from GW picks): {squad_ids}"))
             if team_info:
                 name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
-                team_name = team_info.get('name', 'Unknown')
+                team_name = team_info.get("name", "Unknown")
                 print(c_success(f"✓ Manager: {name} | Team: {team_name}"))
         else:
             print("⚠️  Could not fetch team - using general recommendations")
@@ -2047,18 +2283,30 @@ async def main_async(args):
 
     # Run league spy for auto/default modes when team_id is available
     league_intel = None
-    is_auto_or_default = not any([
-        args.evaluate, args.compare, args.backtest, args.league_spy,
-        args.quiet, args.differentials, args.fixtures, args.top_players,
-        args.chip_strategy, args.my_team, args.lineup,
-    ])
+    is_auto_or_default = not any(
+        [
+            args.evaluate,
+            args.compare,
+            args.backtest,
+            args.league_spy,
+            args.quiet,
+            args.differentials,
+            args.fixtures,
+            args.top_players,
+            args.chip_strategy,
+            args.my_team,
+            args.lineup,
+        ]
+    )
     if args.team_id and is_auto_or_default:
         try:
             print(c_debug("🔄 Scanning rival squads..."))
             spy = LeagueSpy(fpl, args.team_id)
             league_intel = await spy.analyze_league(league_id=args.league_id)
             if league_intel:
-                print(f"✓ League intel: {league_intel.league_name} ({league_intel.total_managers} managers)")
+                print(
+                    f"✓ League intel: {league_intel.league_name} ({league_intel.total_managers} managers)"
+                )
             else:
                 print("⚠️  Could not gather league intel - continuing without")
         except Exception as e:
@@ -2066,7 +2314,12 @@ async def main_async(args):
 
     # Build recommender with league intel
     recommender = RecommendationEngine(
-        fpl, scorer, fixtures, differential_finder, chip_optimizer, news,
+        fpl,
+        scorer,
+        fixtures,
+        differential_finder,
+        chip_optimizer,
+        news,
         league_intel=league_intel,
     )
 
@@ -2091,19 +2344,19 @@ async def main_async(args):
             print("  IAN'S MOVES THIS GAMEWEEK:")
             moves = await get_ian_weekly_moves(current_gw)
             if moves:
-                if moves['transfers_in']:
+                if moves["transfers_in"]:
                     print("    Transfers IN:")
-                    for pid in moves['transfers_in']:
+                    for pid in moves["transfers_in"]:
                         name = player_names.get(pid, f"Player {pid}")
                         print(f"      + {name}")
                     print("    Transfers OUT:")
-                    for pid in moves['transfers_out']:
+                    for pid in moves["transfers_out"]:
                         name = player_names.get(pid, f"Player {pid}")
                         print(f"      - {name}")
                 else:
                     print("    No transfers made")
 
-                if moves['chip']:
+                if moves["chip"]:
                     print(f"    Chip: {moves['chip'].upper()}")
             print()
         return
@@ -2137,10 +2390,16 @@ async def main_async(args):
                 history = json.load(f)
             if history:
                 # Find matching window entry
-                key = f"{args.league_eval}-{args.window}gw" if args.window > 1 else str(args.league_eval)
+                key = (
+                    f"{args.league_eval}-{args.window}gw"
+                    if args.window > 1
+                    else str(args.league_eval)
+                )
                 if key in history:
                     model_corr = history[key].get("overall_correlation", 0)
-                    ownership_corr = history[key].get("correlations", {}).get("ownership", 0)
+                    ownership_corr = (
+                        history[key].get("correlations", {}).get("ownership", 0)
+                    )
 
         print(league_eval.format_league_result(result, model_corr, ownership_corr))
         return
@@ -2214,13 +2473,17 @@ async def main_async(args):
         if dgw:
             print("\nDOUBLE GAMEWEEKS:")
             for gw, team_ids in sorted(dgw.items()):
-                teams = [fpl.get_team(t).short_name for t in team_ids if fpl.get_team(t)]
+                teams = [
+                    fpl.get_team(t).short_name for t in team_ids if fpl.get_team(t)
+                ]
                 print(f"  GW{gw}: {', '.join(teams)}")
 
         if bgw:
             print("\nBLANK GAMEWEEKS:")
             for gw, team_ids in sorted(bgw.items()):
-                teams = [fpl.get_team(t).short_name for t in team_ids if fpl.get_team(t)]
+                teams = [
+                    fpl.get_team(t).short_name for t in team_ids if fpl.get_team(t)
+                ]
                 print(f"  GW{gw}: {', '.join(teams)} blanking")
 
     elif args.top_players:
@@ -2256,10 +2519,10 @@ async def main_async(args):
             # Team info header
             if team_info:
                 name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
-                team_name = team_info.get('name', 'Unknown')
-                overall_rank = team_info.get('summary_overall_rank', 'N/A')
-                overall_points = team_info.get('summary_overall_points', 0)
-                gw_points = team_info.get('summary_event_points', 0)
+                team_name = team_info.get("name", "Unknown")
+                overall_rank = team_info.get("summary_overall_rank", "N/A")
+                overall_points = team_info.get("summary_overall_points", 0)
+                gw_points = team_info.get("summary_event_points", 0)
 
                 # Format rank with commas
                 if isinstance(overall_rank, int):
@@ -2269,7 +2532,9 @@ async def main_async(args):
 
                 print(f"\n👤 {name}")
                 print(f"🏆 {team_name}")
-                print(f"📊 Overall Rank: {rank_str} | Total Points: {overall_points} | GW{current_gw}: {gw_points} pts")
+                print(
+                    f"📊 Overall Rank: {rank_str} | Total Points: {overall_points} | GW{current_gw}: {gw_points} pts"
+                )
 
             # Group players by position
             positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
@@ -2278,14 +2543,16 @@ async def main_async(args):
                 player = fpl.get_player(pick["element"])
                 if player:
                     sp = scorer.score_player(player)
-                    positions[player.position].append({
-                        "player": player,
-                        "scored": sp,
-                        "is_captain": pick.get("is_captain", False),
-                        "is_vice": pick.get("is_vice_captain", False),
-                        "multiplier": pick.get("multiplier", 1),
-                        "position": pick.get("position", 0),
-                    })
+                    positions[player.position].append(
+                        {
+                            "player": player,
+                            "scored": sp,
+                            "is_captain": pick.get("is_captain", False),
+                            "is_vice": pick.get("is_vice_captain", False),
+                            "multiplier": pick.get("multiplier", 1),
+                            "position": pick.get("position", 0),
+                        }
+                    )
 
             # Sort starting XI (positions 1-11) vs bench (12-15)
             print("\n" + "-" * 60)
@@ -2297,7 +2564,9 @@ async def main_async(args):
                 starters = [p for p in positions[pos] if p["position"] <= 11]
                 if starters:
                     print(f"\n{pos}:")
-                    for p in sorted(starters, key=lambda x: x["scored"].overall_score, reverse=True):
+                    for p in sorted(
+                        starters, key=lambda x: x["scored"].overall_score, reverse=True
+                    ):
                         player = p["player"]
                         sp = p["scored"]
                         total_score += sp.overall_score
@@ -2310,14 +2579,23 @@ async def main_async(args):
                             badge = " (VC)"
 
                         # Availability icon
-                        avail_icon = {"fit": "✓", "doubt": "⚠️", "injured": "❌", "suspended": "🚫"}.get(sp.availability, "")
+                        avail_icon = {
+                            "fit": "✓",
+                            "doubt": "⚠️",
+                            "injured": "❌",
+                            "suspended": "🚫",
+                        }.get(sp.availability, "")
 
                         # Fixture info
                         fixture_run = fixtures.get_fixture_run(player.team_id)
-                        next_fix = fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                        next_fix = (
+                            fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                        )
 
-                        print(f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
-                              f"Form: {player.form} | Score: {sp.overall_score:.1f} | Next: {next_fix}{badge}")
+                        print(
+                            f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
+                            f"Form: {player.form} | Score: {sp.overall_score:.1f} | Next: {next_fix}{badge}"
+                        )
 
             print("\n" + "-" * 60)
             print("BENCH")
@@ -2328,9 +2606,16 @@ async def main_async(args):
                 for p in bench:
                     player = p["player"]
                     sp = p["scored"]
-                    avail_icon = {"fit": "✓", "doubt": "⚠️", "injured": "❌", "suspended": "🚫"}.get(sp.availability, "")
-                    print(f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
-                          f"Form: {player.form} | Score: {sp.overall_score:.1f}")
+                    avail_icon = {
+                        "fit": "✓",
+                        "doubt": "⚠️",
+                        "injured": "❌",
+                        "suspended": "🚫",
+                    }.get(sp.availability, "")
+                    print(
+                        f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "
+                        f"Form: {player.form} | Score: {sp.overall_score:.1f}"
+                    )
 
             print("\n" + "-" * 60)
             print(f"SQUAD STRENGTH: {total_score:.1f} (Starting XI total score)")
@@ -2343,8 +2628,10 @@ async def main_async(args):
 
             if all_starters:
                 weakest = min(all_starters, key=lambda x: x["scored"].overall_score)
-                print(f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})")
-                print(f"   Consider replacing in upcoming transfers")
+                print(
+                    f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})"
+                )
+                print("   Consider replacing in upcoming transfers")
 
     elif args.lineup:
         # Standalone lineup setter
@@ -2377,7 +2664,9 @@ async def main_async(args):
                     if pk.get("is_vice_captain"):
                         vc_id = pk["element"]
 
-            result = prompt_lineup(fpl, scorer, squad_ids, captain_id=cap_id, vc_id=vc_id)
+            result = prompt_lineup(
+                fpl, scorer, squad_ids, captain_id=cap_id, vc_id=vc_id
+            )
             if result:
                 starting, bench, cap_id, vc_id = result
                 await fpl_actions.set_lineup(starting, bench, cap_id, vc_id)
@@ -2397,8 +2686,12 @@ async def main_async(args):
             return
 
         await interactive_auto_mode(
-            recommender, fpl, squad_ids, available_chips,
-            args.team_id, current_gw,
+            recommender,
+            fpl,
+            squad_ids,
+            available_chips,
+            args.team_id,
+            current_gw,
         )
 
     else:

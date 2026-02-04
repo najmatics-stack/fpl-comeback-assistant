@@ -4,12 +4,10 @@ using only data available before the target gameweek.
 """
 
 import asyncio
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
-import pandas as pd
 
 import config
 from data.fpl_api import FPLDataFetcher, Player
@@ -26,6 +24,7 @@ APPEARANCE_PTS = {(0, 0): 0, (1, 59): 1, (60, 90): 2}
 @dataclass
 class PlayerGWData:
     """Player stats for a single gameweek"""
+
     player_id: int
     web_name: str
     team: str
@@ -51,6 +50,7 @@ class PlayerGWData:
 @dataclass
 class PreGWSnapshot:
     """Player state using only data available BEFORE a target gameweek"""
+
     player_id: int
     web_name: str
     team: str
@@ -82,6 +82,7 @@ class PreGWSnapshot:
 @dataclass
 class BacktestResult:
     """Result of backtesting a single gameweek"""
+
     target_gw: int
     # Our top N predicted players ranked by score
     predicted_top: List[Tuple[str, float]]  # (web_name, predicted_score)
@@ -114,7 +115,9 @@ class Backtester:
         self.fpl = fpl_data
         self._gw_history: Dict[int, List[Dict]] = {}  # player_id -> gw history
 
-    async def _fetch_player_gw_history(self, session: aiohttp.ClientSession, player_id: int) -> List[Dict]:
+    async def _fetch_player_gw_history(
+        self, session: aiohttp.ClientSession, player_id: int
+    ) -> List[Dict]:
         """Fetch per-gameweek history for a player"""
         if player_id in self._gw_history:
             return self._gw_history[player_id]
@@ -136,13 +139,15 @@ class Backtester:
         batch_size = 20
         async with aiohttp.ClientSession() as session:
             for i in range(0, len(player_ids), batch_size):
-                batch = player_ids[i:i + batch_size]
+                batch = player_ids[i : i + batch_size]
                 tasks = [self._fetch_player_gw_history(session, pid) for pid in batch]
                 await asyncio.gather(*tasks)
                 if i + batch_size < len(player_ids):
                     await asyncio.sleep(0.5)  # Rate limit courtesy
 
-    def _build_pre_gw_snapshot(self, player: Player, target_gw: int) -> Optional[PreGWSnapshot]:
+    def _build_pre_gw_snapshot(
+        self, player: Player, target_gw: int
+    ) -> Optional[PreGWSnapshot]:
         """Build player state using only data from GW1 to GW(target-1)"""
         history = self._gw_history.get(player.id, [])
         if not history:
@@ -180,19 +185,25 @@ class Backtester:
             total_bps=sum(h["bps"] for h in pre_gw),
             total_xg=sum(float(h.get("expected_goals", 0) or 0) for h in pre_gw),
             total_xa=sum(float(h.get("expected_assists", 0) or 0) for h in pre_gw),
-            total_xgi=sum(float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw),
+            total_xgi=sum(
+                float(h.get("expected_goal_involvements", 0) or 0) for h in pre_gw
+            ),
             total_influence=sum(float(h.get("influence", 0) or 0) for h in pre_gw),
             total_creativity=sum(float(h.get("creativity", 0) or 0) for h in pre_gw),
             total_threat=sum(float(h.get("threat", 0) or 0) for h in pre_gw),
             total_saves=sum(h.get("saves", 0) for h in pre_gw),
             total_goals_conceded=sum(h.get("goals_conceded", 0) for h in pre_gw),
-            total_transfers_balance=pre_gw[-1].get("transfers_balance", 0) if pre_gw else 0,
+            total_transfers_balance=pre_gw[-1].get("transfers_balance", 0)
+            if pre_gw
+            else 0,
             games_played=games_played,
             form=form,
             starts=starts,
         )
 
-    def _score_snapshot(self, snap: PreGWSnapshot, fixture_analyzer: FixtureAnalyzer) -> float:
+    def _score_snapshot(
+        self, snap: PreGWSnapshot, fixture_analyzer: FixtureAnalyzer
+    ) -> float:
         """Score a pre-GW snapshot matching the live model as closely as possible.
 
         Uses POSITION_WEIGHTS (the real model) when available, with all factors
@@ -214,7 +225,9 @@ class Backtester:
             xgi_score = 0
 
         # Fixture ease (0-10), position-aware
-        fixture_score = fixture_analyzer.get_fixture_ease_score(snap.team_id, snap.position)
+        fixture_score = fixture_analyzer.get_fixture_ease_score(
+            snap.team_id, snap.position
+        )
 
         # Value (0-10)
         if snap.price > 0:
@@ -241,10 +254,14 @@ class Backtester:
         if snap.position in ("GKP", "DEF") and snap.total_minutes >= 180:
             if snap.position == "GKP":
                 saves_per_90 = snap.total_saves / nineties
-                defensive_score = (snap.total_clean_sheets / nineties) * 12.5 + saves_per_90 * 0.6
+                defensive_score = (
+                    snap.total_clean_sheets / nineties
+                ) * 12.5 + saves_per_90 * 0.6
             else:
                 gc_per_90 = snap.total_goals_conceded / nineties
-                defensive_score = (snap.total_clean_sheets / nineties) * 12.5 - gc_per_90 * 0.8
+                defensive_score = (
+                    snap.total_clean_sheets / nineties
+                ) * 12.5 - gc_per_90 * 0.8
             defensive_score = max(0, min(10, defensive_score))
 
         # ICT position score (0-10) — position-aware decomposition
@@ -341,10 +358,14 @@ class Backtester:
         scored.sort(key=lambda x: x[1], reverse=True)
 
         # Get actual GW results
-        actual_results: List[Tuple[str, int, int, str]] = []  # (name, actual_pts, player_id, position)
+        actual_results: List[
+            Tuple[str, int, int, str]
+        ] = []  # (name, actual_pts, player_id, position)
         for player in all_players:
             actual_pts = self._get_actual_gw_points(player.id, target_gw)
-            actual_results.append((player.web_name, actual_pts, player.id, player.position))
+            actual_results.append(
+                (player.web_name, actual_pts, player.id, player.position)
+            )
 
         actual_results.sort(key=lambda x: x[1], reverse=True)
 
@@ -363,7 +384,11 @@ class Backtester:
         # Captain analysis
         predicted_captain = predicted_top[0][0] if predicted_top else "N/A"
         pred_captain_id = scored[0][0].player_id if scored else None
-        pred_captain_actual = self._get_actual_gw_points(pred_captain_id, target_gw) if pred_captain_id else 0
+        pred_captain_actual = (
+            self._get_actual_gw_points(pred_captain_id, target_gw)
+            if pred_captain_id
+            else 0
+        )
 
         best_captain = actual_results[0][0] if actual_results else "N/A"
         best_captain_pts = actual_results[0][1] if actual_results else 0
@@ -378,31 +403,45 @@ class Backtester:
         # Per-position overlap
         position_overlap = {}
         for pos in ["GKP", "DEF", "MID", "FWD"]:
-            pos_predicted = set(s.web_name for s, _ in scored[:top_n] if s.position == pos)
-            pos_actual = set(name for name, _, _, p in actual_results[:top_n] if p == pos)
+            pos_predicted = set(
+                s.web_name for s, _ in scored[:top_n] if s.position == pos
+            )
+            pos_actual = set(
+                name for name, _, _, p in actual_results[:top_n] if p == pos
+            )
             if pos_predicted and pos_actual:
                 pos_overlap = len(pos_predicted & pos_actual)
                 pos_total = max(len(pos_predicted), len(pos_actual))
-                position_overlap[pos] = pos_overlap / pos_total * 100 if pos_total > 0 else 0
+                position_overlap[pos] = (
+                    pos_overlap / pos_total * 100 if pos_total > 0 else 0
+                )
 
         # Rank correlation (Spearman's)
         predicted_ids = [s.player_id for s, _ in scored[:100]]
         actual_pts_map = {pid: pts for _, pts, pid, _ in actual_results}
 
         pred_ranks = {pid: rank for rank, pid in enumerate(predicted_ids, 1)}
-        actual_sorted = sorted(predicted_ids, key=lambda pid: actual_pts_map.get(pid, 0), reverse=True)
+        actual_sorted = sorted(
+            predicted_ids, key=lambda pid: actual_pts_map.get(pid, 0), reverse=True
+        )
         actual_ranks = {pid: rank for rank, pid in enumerate(actual_sorted, 1)}
 
         n = len(predicted_ids)
         if n > 1:
-            d_squared = sum((pred_ranks[pid] - actual_ranks.get(pid, n)) ** 2 for pid in predicted_ids)
-            rank_corr = 1 - (6 * d_squared) / (n * (n ** 2 - 1))
+            d_squared = sum(
+                (pred_ranks[pid] - actual_ranks.get(pid, n)) ** 2
+                for pid in predicted_ids
+            )
+            rank_corr = 1 - (6 * d_squared) / (n * (n**2 - 1))
         else:
             rank_corr = 0
 
         # Avg actual points of our predicted top 10
         pred_top10_ids = [s.player_id for s, _ in scored[:10]]
-        pred_top10_actual_avg = sum(self._get_actual_gw_points(pid, target_gw) for pid in pred_top10_ids) / 10
+        pred_top10_actual_avg = (
+            sum(self._get_actual_gw_points(pid, target_gw) for pid in pred_top10_ids)
+            / 10
+        )
 
         # Avg actual points of overall top 10
         overall_top10_avg = sum(pts for _, pts in actual_top[:10]) / 10
@@ -452,21 +491,35 @@ class Backtester:
 
         avg_overlap = sum(r.overlap_pct for r in results) / len(results)
         avg_rank_corr = sum(r.rank_correlation for r in results) / len(results)
-        avg_captain_pts = sum(r.predicted_captain_actual_pts for r in results) / len(results)
+        avg_captain_pts = sum(r.predicted_captain_actual_pts for r in results) / len(
+            results
+        )
         avg_best_captain = sum(r.best_captain_pts for r in results) / len(results)
-        avg_pred_top10 = sum(r.predicted_top10_actual_avg for r in results) / len(results)
-        avg_actual_top10 = sum(r.overall_top10_actual_avg for r in results) / len(results)
+        avg_pred_top10 = sum(r.predicted_top10_actual_avg for r in results) / len(
+            results
+        )
+        avg_actual_top10 = sum(r.overall_top10_actual_avg for r in results) / len(
+            results
+        )
         avg_captain_rank = sum(r.captain_rank for r in results) / len(results)
 
         print(f"\n  Top-{top_n} Overlap:        {avg_overlap:.1f}% avg")
         print(f"  Rank Correlation:        {avg_rank_corr:.3f} avg (Spearman)")
         print(f"  Our Captain Avg Pts:     {avg_captain_pts:.1f}")
         print(f"  Best Captain Avg Pts:    {avg_best_captain:.1f}")
-        print(f"  Captain Efficiency:      {avg_captain_pts / avg_best_captain * 100:.0f}%" if avg_best_captain else "  N/A")
+        print(
+            f"  Captain Efficiency:      {avg_captain_pts / avg_best_captain * 100:.0f}%"
+            if avg_best_captain
+            else "  N/A"
+        )
         print(f"  Avg Captain Rank:        {avg_captain_rank:.0f}")
         print(f"  Our Top 10 Avg Pts:      {avg_pred_top10:.1f}")
         print(f"  Actual Top 10 Avg Pts:   {avg_actual_top10:.1f}")
-        print(f"  Selection Efficiency:    {avg_pred_top10 / avg_actual_top10 * 100:.0f}%" if avg_actual_top10 else "  N/A")
+        print(
+            f"  Selection Efficiency:    {avg_pred_top10 / avg_actual_top10 * 100:.0f}%"
+            if avg_actual_top10
+            else "  N/A"
+        )
 
         return results
 
@@ -476,20 +529,28 @@ class Backtester:
             f"\n   --- GW{r.target_gw} RESULTS ---",
             f"   Top-20 Overlap: {r.overlap_count}/20 ({r.overlap_pct:.0f}%)",
             f"   Rank Correlation: {r.rank_correlation:.3f}",
-            f"",
+            "",
             f"   Captain: {r.predicted_captain} → {r.predicted_captain_actual_pts} pts "
             f"(ranked #{r.captain_rank} overall)",
             f"   Best:    {r.best_captain} → {r.best_captain_pts} pts",
-            f"",
+            "",
             f"   Our Top 10 avg:    {r.predicted_top10_actual_avg:.1f} pts",
             f"   Actual Top 10 avg: {r.overall_top10_actual_avg:.1f} pts",
-            f"",
-            f"   PREDICTED TOP 5:          ACTUAL TOP 5:",
+            "",
+            "   PREDICTED TOP 5:          ACTUAL TOP 5:",
         ]
 
         for i in range(5):
-            pred = f"{r.predicted_top[i][0]:15} ({r.predicted_top[i][1]:.1f})" if i < len(r.predicted_top) else ""
-            actual = f"{r.actual_top[i][0]:15} ({r.actual_top[i][1]} pts)" if i < len(r.actual_top) else ""
-            lines.append(f"   {i+1}. {pred:30} {actual}")
+            pred = (
+                f"{r.predicted_top[i][0]:15} ({r.predicted_top[i][1]:.1f})"
+                if i < len(r.predicted_top)
+                else ""
+            )
+            actual = (
+                f"{r.actual_top[i][0]:15} ({r.actual_top[i][1]} pts)"
+                if i < len(r.actual_top)
+                else ""
+            )
+            lines.append(f"   {i + 1}. {pred:30} {actual}")
 
         return "\n".join(lines)

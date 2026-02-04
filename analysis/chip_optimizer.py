@@ -53,7 +53,9 @@ class ChipOptimizer:
         self.expected_bgw = config.EXPECTED_BGW
         self.expected_dgw = config.EXPECTED_DGW
 
-    def _get_upcoming_dgw_bgw(self) -> Tuple[Dict[int, List[str]], Dict[int, List[str]]]:
+    def _get_upcoming_dgw_bgw(
+        self,
+    ) -> Tuple[Dict[int, List[str]], Dict[int, List[str]]]:
         """Get confirmed and expected DGW/BGW info"""
         current_gw = self.fpl.get_current_gameweek()
 

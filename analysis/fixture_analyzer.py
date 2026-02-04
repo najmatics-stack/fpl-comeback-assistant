@@ -5,7 +5,7 @@ Fixture difficulty analysis
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-from data.fpl_api import FPLDataFetcher, Fixture, Team
+from data.fpl_api import FPLDataFetcher, Team
 
 import config
 
@@ -164,7 +164,9 @@ class FixtureAnalyzer:
 
         return sum(ease_scores) / len(ease_scores) if ease_scores else 5.0
 
-    def get_fixture_ease_for_gw(self, team_id: int, target_gw: int, position: str = "MID") -> float:
+    def get_fixture_ease_for_gw(
+        self, team_id: int, target_gw: int, position: str = "MID"
+    ) -> float:
         """
         Calculate fixture ease for a SPECIFIC gameweek (0-10).
         Used for backtesting where we need historical fixture difficulty.
@@ -179,9 +181,12 @@ class FixtureAnalyzer:
         """
         # Get ALL fixtures and filter to target GW
         all_fixtures = self.fpl._fixtures_data or []
-        gw_fixtures = [f for f in all_fixtures
-                       if f.get("event") == target_gw and
-                       (f.get("team_h") == team_id or f.get("team_a") == team_id)]
+        gw_fixtures = [
+            f
+            for f in all_fixtures
+            if f.get("event") == target_gw
+            and (f.get("team_h") == team_id or f.get("team_a") == team_id)
+        ]
 
         if not gw_fixtures:
             return 5.0  # BGW or no data
@@ -286,9 +291,7 @@ class FixtureAnalyzer:
 
     def format_fixture_run(self, run: FixtureRun) -> str:
         """Format fixture run for display"""
-        fixtures_str = " ".join(
-            f"{opp}({diff})" for _, opp, diff, _ in run.fixtures
-        )
+        fixtures_str = " ".join(f"{opp}({diff})" for _, opp, diff, _ in run.fixtures)
         extras = []
         if run.has_double:
             extras.append("DGW")

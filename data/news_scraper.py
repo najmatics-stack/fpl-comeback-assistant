@@ -79,9 +79,7 @@ class NewsScraper:
         injuries: Dict[str, InjuryStatus] = {}
 
         try:
-            response = requests.get(
-                self.injuries_url, headers=self.HEADERS, timeout=10
-            )
+            response = requests.get(self.injuries_url, headers=self.HEADERS, timeout=10)
             response.raise_for_status()
             soup = BeautifulSoup(response.text, "lxml")
 
@@ -149,10 +147,7 @@ class NewsScraper:
         """Categorize status text into standard categories"""
         status_lower = status_text.lower()
 
-        if any(
-            word in status_lower
-            for word in ["suspended", "ban", "red card"]
-        ):
+        if any(word in status_lower for word in ["suspended", "ban", "red card"]):
             return "suspended"
         elif any(
             word in status_lower
@@ -186,9 +181,7 @@ class NewsScraper:
 
         return "fit"
 
-    def get_flagged_players(
-        self, player_names: List[str]
-    ) -> Dict[str, InjuryStatus]:
+    def get_flagged_players(self, player_names: List[str]) -> Dict[str, InjuryStatus]:
         """Check availability for a list of players"""
         injuries = self.scrape_injuries()
         flagged = {}

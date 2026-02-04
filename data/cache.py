@@ -3,7 +3,6 @@ Local caching to avoid rate limits and improve performance
 """
 
 import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional

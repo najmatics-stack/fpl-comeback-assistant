@@ -16,6 +16,7 @@ import aiohttp
 @dataclass
 class EliteOwnership:
     """Elite ownership data for all players"""
+
     player_ownership: Dict[int, float]  # player_id -> ownership %
     sample_size: int
     avg_rank: float
@@ -44,15 +45,15 @@ async def fetch_top_manager_squads(
     pages_needed = (num_managers + 49) // 50
 
     for page in range(1, pages_needed + 1):
-        url = f'https://fantasy.premierleague.com/api/leagues-classic/314/standings/?page_standings={page}'
+        url = f"https://fantasy.premierleague.com/api/leagues-classic/314/standings/?page_standings={page}"
         try:
             async with session.get(url, timeout=15) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    results = data.get('standings', {}).get('results', [])
+                    results = data.get("standings", {}).get("results", [])
                     for m in results:
                         if len(manager_ids) < num_managers:
-                            manager_ids.append(m['entry'])
+                            manager_ids.append(m["entry"])
         except Exception:
             continue
 
@@ -64,11 +65,11 @@ async def fetch_top_manager_squads(
     # Fetch squads in batches
     batch_size = 20
     for i in range(0, len(manager_ids), batch_size):
-        batch = manager_ids[i:i + batch_size]
+        batch = manager_ids[i : i + batch_size]
         tasks = []
 
         for entry_id in batch:
-            url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/event/{current_gw}/picks/'
+            url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{current_gw}/picks/"
             tasks.append(fetch_squad(session, url))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -79,7 +80,9 @@ async def fetch_top_manager_squads(
 
         # Progress update
         if (i + batch_size) % 100 == 0:
-            print(f"   Processed {min(i + batch_size, len(manager_ids))}/{len(manager_ids)} managers...")
+            print(
+                f"   Processed {min(i + batch_size, len(manager_ids))}/{len(manager_ids)} managers..."
+            )
 
         # Rate limiting
         await asyncio.sleep(1.0)
@@ -93,7 +96,7 @@ async def fetch_squad(session: aiohttp.ClientSession, url: str) -> List[int]:
         async with session.get(url, timeout=10) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                return [p['element'] for p in data.get('picks', [])]
+                return [p["element"] for p in data.get("picks", [])]
     except Exception:
         pass
     return []
@@ -146,14 +149,14 @@ async def get_elite_ownership(
 
     async with aiohttp.ClientSession() as session:
         squads = await fetch_top_manager_squads(
-            session,
-            num_managers=num_managers,
-            current_gw=current_gw
+            session, num_managers=num_managers, current_gw=current_gw
         )
 
     ownership = calculate_elite_ownership(squads)
 
-    print(f"✓ Elite ownership calculated ({len(squads)} squads, {len(ownership)} players)")
+    print(
+        f"✓ Elite ownership calculated ({len(squads)} squads, {len(ownership)} players)"
+    )
 
     return EliteOwnership(
         player_ownership=ownership,
@@ -190,7 +193,9 @@ def compare_elite_vs_global(
     print("    " + "-" * 45)
     over = [d for d in diffs if d[4] > 5][:10]
     for _, name, elite_own, global_own, diff in over:
-        print(f"    {name:<18} {elite_own:>5.1f}%   {global_own:>5.1f}%  +{diff:>4.1f}%")
+        print(
+            f"    {name:<18} {elite_own:>5.1f}%   {global_own:>5.1f}%  +{diff:>4.1f}%"
+        )
 
     print("\n  ELITE UNDERWEIGHTS (casuals own more than top managers):")
     print("    Player              Elite    Global   Diff")
@@ -204,8 +209,10 @@ if __name__ == "__main__":
     # Test the module
     async def test():
         elite = await get_elite_ownership(current_gw=23, num_managers=100)
-        print(f"\nTop owned by elite:")
-        sorted_own = sorted(elite.player_ownership.items(), key=lambda x: x[1], reverse=True)
+        print("\nTop owned by elite:")
+        sorted_own = sorted(
+            elite.player_ownership.items(), key=lambda x: x[1], reverse=True
+        )
         for pid, own in sorted_own[:15]:
             print(f"  Player {pid}: {own:.1f}%")
 

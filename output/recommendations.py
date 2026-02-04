@@ -5,10 +5,9 @@ Recommendation engine - generates transfer, captain, and strategic advice
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Tuple
 
-from tabulate import tabulate
 
 from data.fpl_api import FPLDataFetcher, Player
-from data.news_scraper import NewsScraper, InjuryStatus
+from data.news_scraper import NewsScraper
 from analysis.player_scorer import PlayerScorer, ScoredPlayer
 from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.differential import DifferentialFinder, Differential
@@ -196,7 +195,9 @@ class RecommendationEngine:
             if p:
                 pos_counts[p.position] = pos_counts.get(p.position, 0) + 1
 
-        if pos_counts.get(player_in.position, 0) > pos_limits.get(player_in.position, 5):
+        if pos_counts.get(player_in.position, 0) > pos_limits.get(
+            player_in.position, 5
+        ):
             return True
 
         # Rule 3: Squad size must stay at 15
@@ -285,7 +286,9 @@ class RecommendationEngine:
                     continue
 
                 # Skip if outgoing player already used
-                if any(r.player_out.player.id == weak.player.id for r in recommendations):
+                if any(
+                    r.player_out.player.id == weak.player.id for r in recommendations
+                ):
                     break
 
                 # Enforce FPL rules
@@ -303,28 +306,44 @@ class RecommendationEngine:
 
                 # League spy adjustments
                 if self.league_intel:
-                    in_ownership = self.league_intel.league_ownership.get(top.player.id, 0)
+                    in_ownership = self.league_intel.league_ownership.get(
+                        top.player.id, 0
+                    )
                     if in_ownership < 20 and top.player.form >= 4.0:
                         score_gain *= 1.15  # League differential bonus
-                    out_ownership = self.league_intel.league_ownership.get(weak.player.id, 0)
+                    out_ownership = self.league_intel.league_ownership.get(
+                        weak.player.id, 0
+                    )
                     if out_ownership >= 70:
                         score_gain *= 0.85  # Penalty for selling must-haves
 
                     # Global vs league: heavily boost safe differentials
                     # World validates the pick, rivals don't own — maximum exploitation
-                    safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+                    safe_diff_ids = {
+                        e.player_id for e in self.league_intel.safe_differentials
+                    }
                     if top.player.id in safe_diff_ids:
-                        score_gain *= 1.50  # Heavy bonus: world-proven league differential
+                        score_gain *= (
+                            1.50  # Heavy bonus: world-proven league differential
+                        )
 
                     # Trending hidden gems get a strong boost too
-                    trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
+                    trending_ids = {
+                        e.player_id for e in self.league_intel.trending_hidden
+                    }
                     if top.player.id in trending_ids:
-                        score_gain *= 1.35  # World is moving here, league hasn't caught on
+                        score_gain *= (
+                            1.35  # World is moving here, league hasn't caught on
+                        )
 
                     # Selling a league-overweight player your rivals cling to = exploitable
-                    overweight_ids = {e.player_id for e in self.league_intel.league_overweight}
+                    overweight_ids = {
+                        e.player_id for e in self.league_intel.league_overweight
+                    }
                     if weak.player.id in overweight_ids:
-                        score_gain *= 1.25  # Rivals over-index, selling exploits the gap
+                        score_gain *= (
+                            1.25  # Rivals over-index, selling exploits the gap
+                        )
 
                 # For hits (-4), require higher threshold
                 transfer_number = len(recommendations) + 1
@@ -347,29 +366,43 @@ class RecommendationEngine:
                 if is_hit:
                     reasons.append(f"-4 hit (worth +{score_gain:.1f} gain)")
                 if self.league_intel:
-                    in_ownership = self.league_intel.league_ownership.get(top.player.id, 0)
-                    out_ownership = self.league_intel.league_ownership.get(weak.player.id, 0)
+                    in_ownership = self.league_intel.league_ownership.get(
+                        top.player.id, 0
+                    )
+                    out_ownership = self.league_intel.league_ownership.get(
+                        weak.player.id, 0
+                    )
                     if in_ownership < 20 and top.player.form >= 4.0:
-                        reasons.append(f"league differential ({in_ownership:.0f}% rivals)")
+                        reasons.append(
+                            f"league differential ({in_ownership:.0f}% rivals)"
+                        )
                     if out_ownership >= 70:
                         reasons.append(f"rival template ({out_ownership:.0f}% own)")
 
                     # Global vs league reasons
-                    safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+                    safe_diff_map = {
+                        e.player_id: e for e in self.league_intel.safe_differentials
+                    }
                     if top.player.id in safe_diff_map:
                         e = safe_diff_map[top.player.id]
                         reasons.append(
                             f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
                         )
-                    trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+                    trending_map = {
+                        e.player_id: e for e in self.league_intel.trending_hidden
+                    }
                     if top.player.id in trending_map:
                         e = trending_map[top.player.id]
                         xfers = e.transfers_in_event
-                        xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                        xfers_str = (
+                            f"{xfers / 1000:.0f}k" if xfers >= 1000 else str(xfers)
+                        )
                         reasons.append(
                             f"TRENDING: +{xfers_str} transfers, league asleep"
                         )
-                    overweight_map = {e.player_id: e for e in self.league_intel.league_overweight}
+                    overweight_map = {
+                        e.player_id: e for e in self.league_intel.league_overweight
+                    }
                     if weak.player.id in overweight_map:
                         e = overweight_map[weak.player.id]
                         reasons.append(
@@ -393,7 +426,9 @@ class RecommendationEngine:
         recommendations.sort(key=lambda x: x.score_gain, reverse=True)
         return recommendations[:limit]
 
-    def get_general_transfer_suggestions(self, limit: int = 5) -> List[TransferRecommendation]:
+    def get_general_transfer_suggestions(
+        self, limit: int = 5
+    ) -> List[TransferRecommendation]:
         """Get general transfer suggestions without knowing current squad"""
         recommendations = []
 
@@ -501,7 +536,8 @@ class RecommendationEngine:
             # Quality-weighted DGW: scale by fixture quality instead of flat 1.8x
             if fixture_run.has_double:
                 dgw_fixtures = [
-                    diff for gw, _, diff, _ in fixture_run.fixtures
+                    diff
+                    for gw, _, diff, _ in fixture_run.fixtures
                     if sum(1 for g, _, _, _ in fixture_run.fixtures if g == gw) > 1
                     or fixture_run.has_double
                 ]
@@ -529,20 +565,28 @@ class RecommendationEngine:
 
                 # Global vs league captain boost: if the world backs them
                 # but your league doesn't captain them, that's maximum exploitation
-                safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+                safe_diff_ids = {
+                    e.player_id for e in self.league_intel.safe_differentials
+                }
                 if player.id in safe_diff_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count <= 1:
-                        expected_pts *= 1.30  # World-backed, league-ignored = massive edge
+                        expected_pts *= (
+                            1.30  # World-backed, league-ignored = massive edge
+                        )
                     else:
-                        expected_pts *= 1.15  # World-backed even if a few rivals captain
+                        expected_pts *= (
+                            1.15  # World-backed even if a few rivals captain
+                        )
 
                 # Trending hidden as captain = bold but world-validated move
                 trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
                 if player.id in trending_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count == 0:
-                        expected_pts *= 1.25  # Nobody in league captaining, world is moving here
+                        expected_pts *= (
+                            1.25  # Nobody in league captaining, world is moving here
+                        )
 
             # Generate fixture info
             fixtures_str = " + ".join(
@@ -572,19 +616,25 @@ class RecommendationEngine:
                 if player.id in self.league_intel.captain_fades:
                     reasons.append(f"fade: {cap_count}/{num_rivals} rivals captaining")
                 elif player.id in self.league_intel.captain_targets:
-                    reasons.append(f"differential captain ({cap_count}/{num_rivals} rivals)")
+                    reasons.append(
+                        f"differential captain ({cap_count}/{num_rivals} rivals)"
+                    )
 
-                safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+                safe_diff_map = {
+                    e.player_id: e for e in self.league_intel.safe_differentials
+                }
                 if player.id in safe_diff_map:
                     e = safe_diff_map[player.id]
                     reasons.append(
                         f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
                     )
-                trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+                trending_map = {
+                    e.player_id: e for e in self.league_intel.trending_hidden
+                }
                 if player.id in trending_map:
                     e = trending_map[player.id]
                     xfers = e.transfers_in_event
-                    xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                    xfers_str = f"{xfers / 1000:.0f}k" if xfers >= 1000 else str(xfers)
                     reasons.append(f"TRENDING: +{xfers_str} transfers, league asleep")
             elif player.selected_by_percent > 30:
                 reasons.append("safe pick")
@@ -678,14 +728,16 @@ class RecommendationEngine:
             locked_ids=locked_ids,
         )
         cons_gain = sum(t.score_gain for t in conservative)
-        plans.append(TransferPlan(
-            label="conservative",
-            display_label="A: CONSERVATIVE",
-            transfers=conservative,
-            total_score_gain=cons_gain,
-            hit_cost=0,
-            is_recommended=False,
-        ))
+        plans.append(
+            TransferPlan(
+                label="conservative",
+                display_label="A: CONSERVATIVE",
+                transfers=conservative,
+                total_score_gain=cons_gain,
+                hit_cost=0,
+                is_recommended=False,
+            )
+        )
 
         # Plan B: Balanced — free + up to max_hits
         balanced_limit = free_transfers + max_hits
@@ -700,14 +752,16 @@ class RecommendationEngine:
         )
         bal_hits = max(0, len(balanced) - free_transfers)
         bal_gain = sum(t.score_gain for t in balanced)
-        plans.append(TransferPlan(
-            label="balanced",
-            display_label="B: BALANCED",
-            transfers=balanced,
-            total_score_gain=bal_gain,
-            hit_cost=bal_hits * -4,
-            is_recommended=True,
-        ))
+        plans.append(
+            TransferPlan(
+                label="balanced",
+                display_label="B: BALANCED",
+                transfers=balanced,
+                total_score_gain=bal_gain,
+                hit_cost=bal_hits * -4,
+                is_recommended=True,
+            )
+        )
 
         # Plan C: Aggressive — more transfers, lower thresholds
         agg_limit = free_transfers + max(max_hits, 2)
@@ -723,14 +777,16 @@ class RecommendationEngine:
         )
         agg_hits = max(0, len(aggressive) - free_transfers)
         agg_gain = sum(t.score_gain for t in aggressive)
-        plans.append(TransferPlan(
-            label="aggressive",
-            display_label="C: AGGRESSIVE",
-            transfers=aggressive,
-            total_score_gain=agg_gain,
-            hit_cost=agg_hits * -4,
-            is_recommended=False,
-        ))
+        plans.append(
+            TransferPlan(
+                label="aggressive",
+                display_label="C: AGGRESSIVE",
+                transfers=aggressive,
+                total_score_gain=agg_gain,
+                hit_cost=agg_hits * -4,
+                is_recommended=False,
+            )
+        )
 
         return plans
 
@@ -805,7 +861,8 @@ class RecommendationEngine:
                     continue
                 # Get prices of non-selected candidates in this position
                 avail_prices = sorted(
-                    sp.player.price for sp in candidates_by_pos[p]
+                    sp.player.price
+                    for sp in candidates_by_pos[p]
                     if sp.player.id not in selected_ids
                 )
                 # Sum the cheapest `need` prices
@@ -868,7 +925,9 @@ class RecommendationEngine:
                     selected.append(sp)
                     selected_ids.add(sp.player.id)
                     pos_counts[pos] += 1
-                    team_counts[sp.player.team_id] = team_counts.get(sp.player.team_id, 0) + 1
+                    team_counts[sp.player.team_id] = (
+                        team_counts.get(sp.player.team_id, 0) + 1
+                    )
                     remaining_budget -= sp.player.price
 
         # Build transfer list: pair current squad out → new squad in by position
@@ -909,13 +968,15 @@ class RecommendationEngine:
             for out_sp, in_sp in zip(pos_outs, pos_ins):
                 gain = in_sp.overall_score - out_sp.overall_score
                 price_diff = in_sp.player.price - out_sp.player.price
-                transfers.append(TransferRecommendation(
-                    player_out=out_sp,
-                    player_in=in_sp,
-                    score_gain=gain,
-                    price_diff=price_diff,
-                    reason="free hit rebuild",
-                ))
+                transfers.append(
+                    TransferRecommendation(
+                        player_out=out_sp,
+                        player_in=in_sp,
+                        score_gain=gain,
+                        price_diff=price_diff,
+                        reason="free hit rebuild",
+                    )
+                )
 
         transfers.sort(key=lambda t: t.score_gain, reverse=True)
         return selected, transfers
@@ -951,8 +1012,9 @@ class RecommendationEngine:
                     f"Form: {p.form} | Next: {next_fix}"
                 )
 
-        lines.append(f"\n   Squad cost: £{squad_cost:.1f}m | "
-                      f"Remaining: £{remaining:.1f}m")
+        lines.append(
+            f"\n   Squad cost: £{squad_cost:.1f}m | Remaining: £{remaining:.1f}m"
+        )
 
         if transfers:
             lines.append(f"\n   Transfers needed ({len(transfers)}):")
@@ -1003,9 +1065,7 @@ class RecommendationEngine:
                     )
                     lines.append(f"      {tr.reason}")
             hit_str = f" ({plan.hit_cost} pts)" if plan.hit_cost < 0 else " (free)"
-            lines.append(
-                f"   Total: +{plan.total_score_gain:.1f} score gain{hit_str}"
-            )
+            lines.append(f"   Total: +{plan.total_score_gain:.1f} score gain{hit_str}")
         return "\n".join(lines)
 
     def format_full_recommendations(self, rec: FullRecommendation) -> str:
@@ -1056,7 +1116,9 @@ class RecommendationEngine:
         lines.append("-" * 40)
         for i, cp in enumerate(rec.captain_picks, 1):
             p = cp.player.player
-            avail = "" if cp.player.availability == "fit" else f" ⚠️{cp.player.availability}"
+            avail = (
+                "" if cp.player.availability == "fit" else f" ⚠️{cp.player.availability}"
+            )
             lines.append(
                 f"   {i}. {p.web_name} ({p.team}) - {cp.expected_points:.1f} exp pts{avail}"
             )
@@ -1084,7 +1146,9 @@ class RecommendationEngine:
         lines.append("-" * 40)
         for chip_rec in rec.chip_strategy.recommendations:
             priority_icon = {1: "🔥", 2: "📅", 3: "💤"}.get(chip_rec.priority, "?")
-            gw_str = f"GW{chip_rec.recommended_gw}" if chip_rec.recommended_gw else "Hold"
+            gw_str = (
+                f"GW{chip_rec.recommended_gw}" if chip_rec.recommended_gw else "Hold"
+            )
             lines.append(f"   {priority_icon} {chip_rec.chip.value.upper()}: {gw_str}")
             lines.append(f"      {chip_rec.reason}")
         lines.append("")
@@ -1175,10 +1239,12 @@ class RecommendationEngine:
                     )
 
             if self.league_intel.trending_hidden:
-                lines.append("   TRENDING HIDDEN GEMS (world moving to, nobody owns yet):")
+                lines.append(
+                    "   TRENDING HIDDEN GEMS (world moving to, nobody owns yet):"
+                )
                 for entry in self.league_intel.trending_hidden[:4]:
                     xfers = entry.transfers_in_event
-                    xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                    xfers_str = f"{xfers / 1000:.0f}k" if xfers >= 1000 else str(xfers)
                     lines.append(
                         f"      {entry.web_name:15} ({entry.team}) "
                         f"+{xfers_str} transfers | {entry.global_ownership:.0f}% owned | "

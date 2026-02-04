@@ -6,7 +6,7 @@ to find strategic advantages.
 import asyncio
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 
@@ -17,6 +17,7 @@ from data.fpl_api import FPLDataFetcher, Player
 @dataclass
 class Rival:
     """A mini-league rival"""
+
     team_id: int
     manager_name: str
     team_name: str
@@ -29,6 +30,7 @@ class Rival:
 @dataclass
 class GlobalVsLeague:
     """A player with a discrepancy between global and league ownership"""
+
     player_id: int
     web_name: str
     team: str
@@ -44,6 +46,7 @@ class GlobalVsLeague:
 @dataclass
 class LeagueIntel:
     """Intelligence on your mini-league"""
+
     league_name: str
     your_rank: int
     total_managers: int
@@ -61,9 +64,15 @@ class LeagueIntel:
     captain_targets: List[int]  # good picks that few rivals are captaining
 
     # Global vs league discrepancy analysis
-    safe_differentials: List[GlobalVsLeague] = field(default_factory=list)  # World owns, league doesn't
-    league_overweight: List[GlobalVsLeague] = field(default_factory=list)  # League over-indexes vs world
-    trending_hidden: List[GlobalVsLeague] = field(default_factory=list)  # High transfer momentum, low ownership
+    safe_differentials: List[GlobalVsLeague] = field(
+        default_factory=list
+    )  # World owns, league doesn't
+    league_overweight: List[GlobalVsLeague] = field(
+        default_factory=list
+    )  # League over-indexes vs world
+    trending_hidden: List[GlobalVsLeague] = field(
+        default_factory=list
+    )  # High transfer momentum, low ownership
 
 
 class LeagueSpy:
@@ -80,8 +89,9 @@ class LeagueSpy:
         self.your_team_id = your_team_id
         self.cache = Cache()
 
-    async def _fetch_json(self, session: aiohttp.ClientSession, url: str,
-                          cache_key: Optional[str] = None) -> Dict:
+    async def _fetch_json(
+        self, session: aiohttp.ClientSession, url: str, cache_key: Optional[str] = None
+    ) -> Dict:
         """Fetch JSON with caching and exponential backoff for 429/403"""
         if cache_key:
             cached = self.cache.get(cache_key)
@@ -103,13 +113,19 @@ class LeagueSpy:
                 return {}
         return {}
 
-    async def _fetch_league_standings(self, session: aiohttp.ClientSession, league_id: int) -> Dict:
+    async def _fetch_league_standings(
+        self, session: aiohttp.ClientSession, league_id: int
+    ) -> Dict:
         url = f"{self.BASE_URL}/leagues-classic/{league_id}/standings/"
         return await self._fetch_json(session, url, cache_key=f"league_{league_id}")
 
-    async def _fetch_picks(self, session: aiohttp.ClientSession, team_id: int, gw: int) -> Dict:
+    async def _fetch_picks(
+        self, session: aiohttp.ClientSession, team_id: int, gw: int
+    ) -> Dict:
         url = f"{self.BASE_URL}/entry/{team_id}/event/{gw}/picks/"
-        return await self._fetch_json(session, url, cache_key=f"spy_picks_{team_id}_{gw}")
+        return await self._fetch_json(
+            session, url, cache_key=f"spy_picks_{team_id}_{gw}"
+        )
 
     async def _fetch_entry(self, session: aiohttp.ClientSession, team_id: int) -> Dict:
         url = f"{self.BASE_URL}/entry/{team_id}/"
@@ -122,25 +138,29 @@ class LeagueSpy:
 
         # Filter to private leagues (not overall/country), prefer smallest
         private_leagues = [
-            l for l in leagues
-            if l.get("league_type") == "x"  # 'x' = private classic league
+            lg
+            for lg in leagues
+            if lg.get("league_type") == "x"  # 'x' = private classic league
         ]
 
         if not private_leagues:
             # Fallback: any non-global league
             private_leagues = [
-                l for l in leagues
-                if l.get("entry_rank", 0) > 0 and l.get("entry_rank", 999999) < 50
+                lg
+                for lg in leagues
+                if lg.get("entry_rank", 0) > 0 and lg.get("entry_rank", 999999) < 50
             ]
 
         if not private_leagues:
             return None
 
         # Pick the smallest league (most likely the competitive one)
-        private_leagues.sort(key=lambda l: l.get("entry_rank", 999999))
+        private_leagues.sort(key=lambda lg: lg.get("entry_rank", 999999))
         return private_leagues[0]["id"]
 
-    async def analyze_league(self, league_id: Optional[int] = None) -> Optional[LeagueIntel]:
+    async def analyze_league(
+        self, league_id: Optional[int] = None
+    ) -> Optional[LeagueIntel]:
         """Analyze a mini-league and build intelligence"""
         current_gw = self.fpl.get_current_gameweek()
 
@@ -215,8 +235,7 @@ class LeagueSpy:
                 captain_counts[rival.captain_id] += 1
 
         league_ownership = {
-            pid: (count / num_rivals) * 100
-            for pid, count in player_counts.items()
+            pid: (count / num_rivals) * 100 for pid, count in player_counts.items()
         }
 
         league_captains = dict(captain_counts)
@@ -225,30 +244,31 @@ class LeagueSpy:
         # Differentials: good players that <20% of rivals own
         all_players = self.fpl.get_all_players()
         scored_available = [
-            p for p in all_players
+            p
+            for p in all_players
             if p.status == "a" and p.form >= 3.0 and p.minutes > 0
         ]
 
         differential_vs_league = [
-            p.id for p in scored_available
+            p.id
+            for p in scored_available
             if league_ownership.get(p.id, 0) < 20 and p.form >= 4.0
         ]
 
         # Must-haves: players >70% of rivals own (dangerous to not have)
-        must_have = [
-            pid for pid, pct in league_ownership.items()
-            if pct >= 70
-        ]
+        must_have = [pid for pid, pct in league_ownership.items() if pct >= 70]
 
         # Captain fades: popular rival captains (captaining same = no advantage)
         captain_fades = [
-            pid for pid, count in captain_counts.items()
+            pid
+            for pid, count in captain_counts.items()
             if count >= num_rivals * 0.4  # >40% of rivals captaining
         ]
 
         # Captain targets: strong players that few rivals captain
         captain_targets = [
-            p.id for p in scored_available
+            p.id
+            for p in scored_available
             if p.form >= 5.0
             and captain_counts.get(p.id, 0) <= 1
             and p.total_points > 50
@@ -316,7 +336,12 @@ class LeagueSpy:
 
             # Safe differentials: world owns significantly more than league
             # These are proven picks that give you an edge over rivals
-            if discrepancy > 15 and global_pct > 15 and league_pct < 30 and player.form >= 3.0:
+            if (
+                discrepancy > 15
+                and global_pct > 15
+                and league_pct < 30
+                and player.form >= 3.0
+            ):
                 safe_differentials.append(_make_entry("safe_differential"))
 
             # League overweight: league owns significantly more than the world
@@ -326,10 +351,12 @@ class LeagueSpy:
 
             # Trending hidden: high transfer-in momentum, still under-owned everywhere
             # The world is moving to these players — early mover advantage
-            if (player.transfers_in_event > 50000
-                    and global_pct < 15
-                    and league_pct < 20
-                    and player.form >= 4.0):
+            if (
+                player.transfers_in_event > 50000
+                and global_pct < 15
+                and league_pct < 20
+                and player.form >= 4.0
+            ):
                 trending_hidden.append(_make_entry("trending_hidden"))
 
         # Sort each list by most exploitable
@@ -350,13 +377,17 @@ class LeagueSpy:
         ]
 
         # Standings
-        lines.append(f"\n  STANDINGS:")
+        lines.append("\n  STANDINGS:")
         for rival in sorted(intel.rivals, key=lambda r: r.rank):
-            lines.append(f"    #{rival.rank} {rival.manager_name:20} {rival.total_points} pts - {rival.team_name}")
+            lines.append(
+                f"    #{rival.rank} {rival.manager_name:20} {rival.total_points} pts - {rival.team_name}"
+            )
 
         # Most owned in league
-        lines.append(f"\n  MOST OWNED IN YOUR LEAGUE:")
-        top_owned = sorted(intel.league_ownership.items(), key=lambda x: x[1], reverse=True)[:10]
+        lines.append("\n  MOST OWNED IN YOUR LEAGUE:")
+        top_owned = sorted(
+            intel.league_ownership.items(), key=lambda x: x[1], reverse=True
+        )[:10]
         for pid, pct in top_owned:
             p = self.fpl.get_player(pid)
             if p:
@@ -364,15 +395,19 @@ class LeagueSpy:
 
         # Popular captains
         if intel.league_captains:
-            lines.append(f"\n  RIVAL CAPTAINS THIS GW:")
-            for pid, count in sorted(intel.league_captains.items(), key=lambda x: x[1], reverse=True):
+            lines.append("\n  RIVAL CAPTAINS THIS GW:")
+            for pid, count in sorted(
+                intel.league_captains.items(), key=lambda x: x[1], reverse=True
+            ):
                 p = self.fpl.get_player(pid)
                 if p:
-                    lines.append(f"    {p.web_name:15} - {count}/{len(intel.rivals)} rivals")
+                    lines.append(
+                        f"    {p.web_name:15} - {count}/{len(intel.rivals)} rivals"
+                    )
 
         # Must haves (risky to not own)
         if intel.must_have:
-            lines.append(f"\n  MUST-HAVES (>70% rival ownership):")
+            lines.append("\n  MUST-HAVES (>70% rival ownership):")
             for pid in intel.must_have[:5]:
                 p = self.fpl.get_player(pid)
                 if p:
@@ -380,7 +415,7 @@ class LeagueSpy:
                     lines.append(f"    {p.web_name:15} ({p.team}) - {pct:.0f}% own")
 
         # Captain strategy
-        lines.append(f"\n  CAPTAIN STRATEGY:")
+        lines.append("\n  CAPTAIN STRATEGY:")
         if intel.captain_fades:
             fade_names = []
             for pid in intel.captain_fades:
@@ -396,12 +431,14 @@ class LeagueSpy:
                 p = self.fpl.get_player(pid)
                 if p:
                     cap_count = intel.league_captains.get(pid, 0)
-                    target_players.append(f"{p.web_name} ({cap_count}/{len(intel.rivals)} rivals)")
+                    target_players.append(
+                        f"{p.web_name} ({cap_count}/{len(intel.rivals)} rivals)"
+                    )
             if target_players:
                 lines.append(f"    TARGET (differential): {', '.join(target_players)}")
 
         # Differentials vs league
-        lines.append(f"\n  DIFFERENTIALS VS YOUR LEAGUE:")
+        lines.append("\n  DIFFERENTIALS VS YOUR LEAGUE:")
         diff_players = []
         for pid in intel.differential_vs_league[:8]:
             p = self.fpl.get_player(pid)
@@ -411,14 +448,16 @@ class LeagueSpy:
 
         diff_players.sort(key=lambda x: x[0].form, reverse=True)
         for p, pct in diff_players[:5]:
-            lines.append(f"    {p.web_name:15} ({p.team}) form:{p.form} - {pct:.0f}% of rivals own")
+            lines.append(
+                f"    {p.web_name:15} ({p.team}) form:{p.form} - {pct:.0f}% of rivals own"
+            )
 
         # Global vs League discrepancy analysis
         if intel.safe_differentials or intel.league_overweight or intel.trending_hidden:
-            lines.append(f"\n  GLOBAL vs LEAGUE ANALYSIS:")
+            lines.append("\n  GLOBAL vs LEAGUE ANALYSIS:")
 
         if intel.safe_differentials:
-            lines.append(f"\n  SAFE DIFFERENTIALS (world owns, league doesn't):")
+            lines.append("\n  SAFE DIFFERENTIALS (world owns, league doesn't):")
             for entry in intel.safe_differentials[:5]:
                 lines.append(
                     f"    {entry.web_name:15} ({entry.team}) "
@@ -427,7 +466,7 @@ class LeagueSpy:
                 )
 
         if intel.league_overweight:
-            lines.append(f"\n  LEAGUE OVERWEIGHT (rivals over-indexing vs world):")
+            lines.append("\n  LEAGUE OVERWEIGHT (rivals over-indexing vs world):")
             for entry in intel.league_overweight[:5]:
                 lines.append(
                     f"    {entry.web_name:15} ({entry.team}) "
@@ -436,10 +475,10 @@ class LeagueSpy:
                 )
 
         if intel.trending_hidden:
-            lines.append(f"\n  TRENDING HIDDEN GEMS (high transfers in, low ownership):")
+            lines.append("\n  TRENDING HIDDEN GEMS (high transfers in, low ownership):")
             for entry in intel.trending_hidden[:5]:
                 xfers = entry.transfers_in_event
-                xfers_str = f"{xfers/1000:.0f}k" if xfers >= 1000 else str(xfers)
+                xfers_str = f"{xfers / 1000:.0f}k" if xfers >= 1000 else str(xfers)
                 lines.append(
                     f"    {entry.web_name:15} ({entry.team}) "
                     f"Transfers in: {xfers_str} | Global: {entry.global_ownership:.1f}% | "

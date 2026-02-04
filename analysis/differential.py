@@ -5,7 +5,7 @@ Differential finder - identifies low-ownership high-potential players
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-from data.fpl_api import FPLDataFetcher, Player
+from data.fpl_api import FPLDataFetcher
 from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.player_scorer import PlayerScorer, ScoredPlayer
 
@@ -161,7 +161,9 @@ class DifferentialFinder:
         result = {}
 
         for pos in positions:
-            result[pos] = self.find_differentials(position=pos, limit=limit_per_position)
+            result[pos] = self.find_differentials(
+                position=pos, limit=limit_per_position
+            )
 
         return result
 

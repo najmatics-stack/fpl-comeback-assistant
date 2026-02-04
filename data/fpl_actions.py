@@ -109,7 +109,9 @@ class FPLActions:
         if not self._logged_in or not self._session:
             raise RuntimeError("Not logged in. Call login() first.")
 
-    async def set_captain(self, captain_id: int, vice_captain_id: int, current_gw: int) -> bool:
+    async def set_captain(
+        self, captain_id: int, vice_captain_id: int, current_gw: int
+    ) -> bool:
         """Set captain and vice captain"""
         self._check_login()
 
@@ -188,7 +190,9 @@ class FPLActions:
         url = f"{self.BASE_URL}/my-team/{self.team_id}/"
         async with self._session.get(url) as resp:
             if resp.status != 200:
-                print(f"❌ Could not fetch team data for transfers (HTTP {resp.status})")
+                print(
+                    f"❌ Could not fetch team data for transfers (HTTP {resp.status})"
+                )
                 return False
             my_team = await resp.json()
 
@@ -203,10 +207,16 @@ class FPLActions:
                 name_map = {e["id"]: e["web_name"] for e in bootstrap["elements"]}
 
         # Debug: show actual squad vs requested transfers
-        print(f"   [debug] actual squad ({len(actual_squad_ids)} players): "
-              f"{[f'{eid}({name_map.get(eid, '?')})' for eid in actual_squad_ids]}")
-        print(f"   [debug] transfers_out: {[f'{eid}({name_map.get(eid, '?')})' for eid in transfers_out]}")
-        print(f"   [debug] transfers_in:  {[f'{eid}({name_map.get(eid, '?')})' for eid in transfers_in]}")
+        print(
+            f"   [debug] actual squad ({len(actual_squad_ids)} players): "
+            f"{[f'{eid}({name_map.get(eid, '?')})' for eid in actual_squad_ids]}"
+        )
+        print(
+            f"   [debug] transfers_out: {[f'{eid}({name_map.get(eid, '?')})' for eid in transfers_out]}"
+        )
+        print(
+            f"   [debug] transfers_in:  {[f'{eid}({name_map.get(eid, '?')})' for eid in transfers_in]}"
+        )
 
         # Filter out transfers that have already been applied
         # (e.g. from a previous auto-pilot run with stale recommendations)
@@ -219,20 +229,28 @@ class FPLActions:
                 valid_out.append(out_id)
                 valid_in.append(in_id)
             elif not out_in_squad and in_already:
-                print(f"   [debug] Skipping already-applied transfer: "
-                      f"{name_map.get(out_id, out_id)} -> {name_map.get(in_id, in_id)}")
+                print(
+                    f"   [debug] Skipping already-applied transfer: "
+                    f"{name_map.get(out_id, out_id)} -> {name_map.get(in_id, in_id)}"
+                )
             else:
-                print(f"   [debug] ⚠️  Unexpected state: OUT {out_id}({name_map.get(out_id, '?')}) "
-                      f"in_squad={out_in_squad}, IN {in_id}({name_map.get(in_id, '?')}) "
-                      f"in_squad={in_already}")
+                print(
+                    f"   [debug] ⚠️  Unexpected state: OUT {out_id}({name_map.get(out_id, '?')}) "
+                    f"in_squad={out_in_squad}, IN {in_id}({name_map.get(in_id, '?')}) "
+                    f"in_squad={in_already}"
+                )
 
         if not valid_out:
-            print("✓ All recommended transfers have already been applied — nothing to do")
+            print(
+                "✓ All recommended transfers have already been applied — nothing to do"
+            )
             return True
 
         if len(valid_out) < len(transfers_out):
-            print(f"   [debug] {len(transfers_out) - len(valid_out)} transfer(s) already applied, "
-                  f"{len(valid_out)} remaining")
+            print(
+                f"   [debug] {len(transfers_out) - len(valid_out)} transfer(s) already applied, "
+                f"{len(valid_out)} remaining"
+            )
 
         transfers_out = valid_out
         transfers_in = valid_in
@@ -248,12 +266,14 @@ class FPLActions:
 
             purchase_price = price_map.get(in_id, 0)
 
-            transfer_list.append({
-                "element_in": in_id,
-                "element_out": out_id,
-                "purchase_price": purchase_price,
-                "selling_price": selling_price or 0,
-            })
+            transfer_list.append(
+                {
+                    "element_in": in_id,
+                    "element_out": out_id,
+                    "purchase_price": purchase_price,
+                    "selling_price": selling_price or 0,
+                }
+            )
 
         chip = None
         if wildcard:
@@ -265,8 +285,12 @@ class FPLActions:
         transfer_event = current_gw + 1
         transfers_info = my_team.get("transfers", {})
 
-        print(f"   [debug] transfer_event=GW{transfer_event} | chip={chip} | num_transfers={len(transfer_list)}")
-        print(f"   [debug] free_transfers={transfers_info.get('limit', '?')} | bank=£{transfers_info.get('bank', 0) / 10:.1f}m")
+        print(
+            f"   [debug] transfer_event=GW{transfer_event} | chip={chip} | num_transfers={len(transfer_list)}"
+        )
+        print(
+            f"   [debug] free_transfers={transfers_info.get('limit', '?')} | bank=£{transfers_info.get('bank', 0) / 10:.1f}m"
+        )
 
         payload = {
             "confirmed": True,
@@ -281,8 +305,10 @@ class FPLActions:
         async with self._session.post(url, json=payload) as resp:
             if resp.status in (200, 202):
                 hits = max(0, (len(transfers_out) - transfers_info.get("limit", 1)) * 4)
-                print(f"✓ {len(transfers_out)} transfer(s) made" +
-                      (f" (-{hits} pts)" if hits > 0 else " (free)"))
+                print(
+                    f"✓ {len(transfers_out)} transfer(s) made"
+                    + (f" (-{hits} pts)" if hits > 0 else " (free)")
+                )
                 return True
             else:
                 text = await resp.text()
@@ -337,19 +363,23 @@ class FPLActions:
         self._check_login()
 
         if len(starting) != 11 or len(bench) != 4:
-            print(f"❌ Invalid lineup: need 11 starters + 4 bench, got {len(starting)} + {len(bench)}")
+            print(
+                f"❌ Invalid lineup: need 11 starters + 4 bench, got {len(starting)} + {len(bench)}"
+            )
             return False
 
         ordered = list(starting) + list(bench)
 
         picks = []
         for i, pid in enumerate(ordered):
-            picks.append({
-                "element": pid,
-                "position": i + 1,
-                "is_captain": pid == captain_id,
-                "is_vice_captain": pid == vice_captain_id,
-            })
+            picks.append(
+                {
+                    "element": pid,
+                    "position": i + 1,
+                    "is_captain": pid == captain_id,
+                    "is_vice_captain": pid == vice_captain_id,
+                }
+            )
 
         url = f"{self.BASE_URL}/my-team/{self.team_id}/"
         payload = {"picks": picks}
@@ -401,7 +431,9 @@ class FPLActions:
                 data = await resp.json()
                 picks = data.get("picks", [])
                 squad_ids = [p["element"] for p in picks]
-                print(f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}")
+                print(
+                    f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}"
+                )
                 return squad_ids
         except Exception as e:
             print(f"   [debug] get_current_squad error: {e}")
@@ -422,7 +454,9 @@ class FPLActions:
         try:
             async with self._session.get(url) as resp:
                 if resp.status != 200:
-                    print(f"   [debug] get_squad_with_budget failed: HTTP {resp.status}")
+                    print(
+                        f"   [debug] get_squad_with_budget failed: HTTP {resp.status}"
+                    )
                     return None
                 data = await resp.json()
 
@@ -431,15 +465,16 @@ class FPLActions:
 
             squad_ids = [p["element"] for p in picks]
             # selling_price is in tenths (e.g. 55 = £5.5m)
-            selling_prices = {
-                p["element"]: p["selling_price"] / 10
-                for p in picks
-            }
+            selling_prices = {p["element"]: p["selling_price"] / 10 for p in picks}
             bank = transfers_info.get("bank", 0) / 10
             total_budget = sum(selling_prices.values()) + bank
 
-            print(f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}")
-            print(f"   [debug] Budget: £{total_budget:.1f}m (selling prices £{sum(selling_prices.values()):.1f}m + bank £{bank:.1f}m)")
+            print(
+                f"   [debug] Authenticated squad ({len(squad_ids)} players): {squad_ids}"
+            )
+            print(
+                f"   [debug] Budget: £{total_budget:.1f}m (selling prices £{sum(selling_prices.values()):.1f}m + bank £{bank:.1f}m)"
+            )
 
             return {
                 "squad_ids": squad_ids,
@@ -453,6 +488,7 @@ class FPLActions:
 
 
 # --- Session persistence ---
+
 
 def _save_session(session_data: Dict[str, str]):
     """Save session data to ~/.fpl_session"""
@@ -488,6 +524,7 @@ def _load_session() -> Optional[Dict[str, str]]:
 
 # --- Credentials ---
 
+
 def _load_credentials() -> Optional[Tuple[str, str]]:
     """Load email/password from ~/.fpl_credentials"""
     if not CREDENTIALS_FILE.exists():
@@ -516,6 +553,7 @@ def _prompt_and_save_credentials() -> Tuple[str, str]:
 
 # --- Selenium browser login ---
 
+
 def _dismiss_chrome_popups(driver) -> None:
     """Dismiss Chrome popups like password breach warnings, save password, etc."""
     from selenium.webdriver.common.by import By
@@ -531,8 +569,15 @@ def _dismiss_chrome_popups(driver) -> None:
 
         # Look for common popup dismiss buttons
         dismiss_texts = [
-            "ok", "close", "dismiss", "got it", "not now",
-            "no thanks", "never", "cancel", "skip"
+            "ok",
+            "close",
+            "dismiss",
+            "got it",
+            "not now",
+            "no thanks",
+            "never",
+            "cancel",
+            "skip",
         ]
 
         for btn in driver.find_elements(By.TAG_NAME, "button"):
@@ -546,7 +591,12 @@ def _dismiss_chrome_popups(driver) -> None:
                 continue
 
         # Also check for popup close buttons (X icons, etc.)
-        for selector in ["[aria-label='Close']", ".close", ".dismiss", "[data-dismiss]"]:
+        for selector in [
+            "[aria-label='Close']",
+            ".close",
+            ".dismiss",
+            "[data-dismiss]",
+        ]:
             try:
                 close_btn = driver.find_element(By.CSS_SELECTOR, selector)
                 close_btn.click()
@@ -632,7 +682,7 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                     try:
                         text = b.text.strip().lower()
                         if text == "log in":
-                            print(f"   [debug] Clicking 'Log in' button")
+                            print("   [debug] Clicking 'Log in' button")
                             b.click()
                             clicked = True
                             break
@@ -669,7 +719,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                             src = iframe.get_attribute("src") or ""
                             name = iframe.get_attribute("name") or ""
                             iframe_id = iframe.get_attribute("id") or ""
-                            print(f"   [debug]   iframe[{i}] src='{src[:100]}' name='{name}' id='{iframe_id}'")
+                            print(
+                                f"   [debug]   iframe[{i}] src='{src[:100]}' name='{name}' id='{iframe_id}'"
+                            )
                         except Exception:
                             pass
 
@@ -684,7 +736,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                     # Check for password field on current page (modal/inline form)
                     if not login_form_found:
                         try:
-                            pw = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+                            driver.find_element(
+                                By.CSS_SELECTOR, "input[type='password']"
+                            )
                             print("   [debug] Found password field on main page")
                             login_form_found = True
                         except Exception:
@@ -695,7 +749,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                         for i, iframe in enumerate(iframes):
                             try:
                                 driver.switch_to.frame(iframe)
-                                pw = driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+                                driver.find_element(
+                                    By.CSS_SELECTOR, "input[type='password']"
+                                )
                                 print(f"   [debug] Found password field in iframe[{i}]")
                                 login_form_found = True
                                 # Stay in this iframe context for form filling
@@ -709,19 +765,30 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                         print("   [debug] No login form yet, waiting longer...")
                         try:
                             WebDriverWait(driver, 15).until(
-                                lambda d: d.current_url != pre_click_url
-                                or len(d.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0
+                                lambda d: (
+                                    d.current_url != pre_click_url
+                                    or len(
+                                        d.find_elements(
+                                            By.CSS_SELECTOR, "input[type='password']"
+                                        )
+                                    )
+                                    > 0
+                                )
                             )
                             print(f"   [debug] Page changed. URL: {driver.current_url}")
                         except Exception:
-                            print(f"   [debug] Timeout. URL still: {driver.current_url}")
+                            print(
+                                f"   [debug] Timeout. URL still: {driver.current_url}"
+                            )
                             # Dump page for debugging
                             inputs = driver.find_elements(By.TAG_NAME, "input")
                             print(f"   [debug] Inputs on page: {len(inputs)}")
                             for inp in inputs:
                                 try:
-                                    print(f"   [debug]   type={inp.get_attribute('type')} "
-                                          f"name={inp.get_attribute('name')}")
+                                    print(
+                                        f"   [debug]   type={inp.get_attribute('type')} "
+                                        f"name={inp.get_attribute('name')}"
+                                    )
                                 except Exception:
                                     pass
                 else:
@@ -734,7 +801,7 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                     for b in driver.find_elements(By.TAG_NAME, "button"):
                         if b.text.strip() == consent_text:
                             b.click()
-                            print(f"   [debug] Dismissed login page cookie banner")
+                            print("   [debug] Dismissed login page cookie banner")
                             time.sleep(0.5)
                             break
                 except Exception:
@@ -747,10 +814,12 @@ def _selenium_login() -> Optional[Dict[str, str]]:
             print(f"   [debug] Found {len(inputs)} <input> elements:")
             for inp in inputs:
                 try:
-                    print(f"   [debug]   type={inp.get_attribute('type')} "
-                          f"name={inp.get_attribute('name')} "
-                          f"id={inp.get_attribute('id')} "
-                          f"placeholder={inp.get_attribute('placeholder')}")
+                    print(
+                        f"   [debug]   type={inp.get_attribute('type')} "
+                        f"name={inp.get_attribute('name')} "
+                        f"id={inp.get_attribute('id')} "
+                        f"placeholder={inp.get_attribute('placeholder')}"
+                    )
                 except Exception:
                     pass
 
@@ -782,7 +851,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
 
             # Fill password
             pw_field = WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input#password, input[type='password']"))
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "input#password, input[type='password']")
+                )
             )
             pw_field.clear()
             pw_field.send_keys(password)
@@ -796,7 +867,9 @@ def _selenium_login() -> Optional[Dict[str, str]]:
             ]:
                 try:
                     btn = driver.find_element(By.CSS_SELECTOR, sel)
-                    print(f"   [debug] Clicking submit: {sel} (text='{btn.text.strip()}')")
+                    print(
+                        f"   [debug] Clicking submit: {sel} (text='{btn.text.strip()}')"
+                    )
                     btn.click()
                     submitted = True
                     break
@@ -822,7 +895,7 @@ def _selenium_login() -> Optional[Dict[str, str]]:
                 print("   Could not find submit button — please click it manually")
 
         except Exception as e:
-            print(f"   Auto-login failed, please log in manually")
+            print("   Auto-login failed, please log in manually")
             print(f"   [debug] Exception: {type(e).__name__}: {e}")
             traceback.print_exc()
 

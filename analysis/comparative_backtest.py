@@ -5,7 +5,7 @@ Each model uses only pre-GW data (blind test).
 
 import asyncio
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import aiohttp
 
@@ -20,6 +20,7 @@ BASE_URL = "https://fantasy.premierleague.com/api"
 @dataclass
 class ModelScore:
     """Score from a single model for a single GW"""
+
     model_name: str
     gameweek: int
     top10_avg_pts: float  # Avg actual pts of model's top 10 picks
@@ -32,6 +33,7 @@ class ModelScore:
 @dataclass
 class ComparisonResult:
     """Full comparison across models and gameweeks"""
+
     gameweeks: List[int]
     scores: Dict[str, List[ModelScore]]  # model_name -> list of GW scores
 
@@ -47,7 +49,7 @@ class ComparativeBacktester:
         batch_size = 20
         async with aiohttp.ClientSession() as session:
             for i in range(0, len(player_ids), batch_size):
-                batch = player_ids[i:i + batch_size]
+                batch = player_ids[i : i + batch_size]
                 tasks = []
                 for pid in batch:
                     if pid not in self._gw_history:
@@ -68,7 +70,11 @@ class ComparativeBacktester:
             pass
 
     def _get_pre_gw_data(self, player_id: int, target_gw: int) -> List[Dict]:
-        return [h for h in self._gw_history.get(player_id, []) if h["round"] < target_gw and h["minutes"] > 0]
+        return [
+            h
+            for h in self._gw_history.get(player_id, [])
+            if h["round"] < target_gw and h["minutes"] > 0
+        ]
 
     def _get_actual_pts(self, player_id: int, gw: int) -> int:
         for h in self._gw_history.get(player_id, []):
@@ -80,18 +86,22 @@ class ComparativeBacktester:
         n = len(x)
         if n < 3:
             return 0.0
+
         def rank(arr):
             s = sorted(range(n), key=lambda i: arr[i], reverse=True)
             r = [0.0] * n
             for rk, idx in enumerate(s, 1):
                 r[idx] = float(rk)
             return r
+
         rx, ry = rank(x), rank(y)
         d_sq = sum((rx[i] - ry[i]) ** 2 for i in range(n))
-        return 1 - (6 * d_sq) / (n * (n ** 2 - 1))
+        return 1 - (6 * d_sq) / (n * (n**2 - 1))
 
     # ---- MODEL 1: Our model (weighted composite, matches live scorer) ----
-    def _score_ours(self, player: Player, pre_gw: List[Dict], fixture_analyzer: FixtureAnalyzer) -> float:
+    def _score_ours(
+        self, player: Player, pre_gw: List[Dict], fixture_analyzer: FixtureAnalyzer
+    ) -> float:
         gp = len(pre_gw)
         total_min = sum(h["minutes"] for h in pre_gw)
         if total_min < 90:
@@ -106,7 +116,9 @@ class ComparativeBacktester:
         mult = config.XGI_POSITION_MULTIPLIERS.get(player.position, 12.5)
         xgi_score = min(10, xgi_p90 * mult)
 
-        fixture = fixture_analyzer.get_fixture_ease_score(player.team_id, player.position)
+        fixture = fixture_analyzer.get_fixture_ease_score(
+            player.team_id, player.position
+        )
 
         total_pts = sum(h["total_points"] for h in pre_gw)
         price = pre_gw[-1]["value"] / 10
@@ -132,9 +144,13 @@ class ComparativeBacktester:
             total_gc = sum(h.get("goals_conceded", 0) for h in pre_gw)
             if player.position == "GKP":
                 total_saves = sum(h.get("saves", 0) for h in pre_gw)
-                defensive_score = (total_cs / nineties) * 12.5 + (total_saves / nineties) * 0.6
+                defensive_score = (total_cs / nineties) * 12.5 + (
+                    total_saves / nineties
+                ) * 0.6
             else:
-                defensive_score = (total_cs / nineties) * 12.5 - (total_gc / nineties) * 0.8
+                defensive_score = (total_cs / nineties) * 12.5 - (
+                    total_gc / nineties
+                ) * 0.8
             defensive_score = max(0, min(10, defensive_score))
 
         # ICT position score
@@ -177,7 +193,12 @@ class ComparativeBacktester:
             }
             weights = pos_weights
         else:
-            ict_total = sum(float(h.get("influence", 0) or 0) + float(h.get("creativity", 0) or 0) + float(h.get("threat", 0) or 0) for h in pre_gw)
+            ict_total = sum(
+                float(h.get("influence", 0) or 0)
+                + float(h.get("creativity", 0) or 0)
+                + float(h.get("threat", 0) or 0)
+                for h in pre_gw
+            )
             ict = min(10, (ict_total / gp) / 50)
             factors = {
                 "form": form,
@@ -195,8 +216,12 @@ class ComparativeBacktester:
             bonuses = {}
         else:
             bonuses = {
-                "bonus_magnet": min(1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5),
-                "transfer_momentum": max(0, min(2.0, pre_gw[-1].get("transfers_balance", 0) / 50000)),
+                "bonus_magnet": min(
+                    1.0, sum(h.get("bonus", 0) for h in pre_gw) / gp / 1.5
+                ),
+                "transfer_momentum": max(
+                    0, min(2.0, pre_gw[-1].get("transfers_balance", 0) / 50000)
+                ),
             }
 
         return compute_weighted_score(factors, weights, bonuses)
@@ -251,7 +276,9 @@ class ComparativeBacktester:
             captain_rank += 1
 
         pred_scores = [s for _, s in scores[:100]]
-        actual_pts = [float(self._get_actual_pts(pid, target_gw)) for pid, _ in scores[:100]]
+        actual_pts = [
+            float(self._get_actual_pts(pid, target_gw)) for pid, _ in scores[:100]
+        ]
         rank_corr = self._spearman(pred_scores, actual_pts)
 
         return ModelScore(
@@ -298,7 +325,9 @@ class ComparativeBacktester:
                 if len(pre) < 3:
                     continue
 
-                model_scores["Our Model"].append((p.id, self._score_ours(p, pre, fixture_analyzer)))
+                model_scores["Our Model"].append(
+                    (p.id, self._score_ours(p, pre, fixture_analyzer))
+                )
                 model_scores["Last 5 Avg"].append((p.id, self._score_last5avg(pre)))
                 model_scores["Season Avg"].append((p.id, self._score_season_avg(pre)))
                 model_scores["xGI Only"].append((p.id, self._score_xgi_only(p, pre)))
@@ -320,8 +349,10 @@ class ComparativeBacktester:
         # Per-GW breakdown
         for gw in result.gameweeks:
             lines.append(f"\n  GW{gw}:")
-            lines.append(f"  {'Model':<15} {'Top10 Avg':>9} {'Top20 Hit':>9} {'Capt Pts':>9} {'Capt Rank':>10} {'Rank Corr':>10}")
-            lines.append(f"  {'-'*64}")
+            lines.append(
+                f"  {'Model':<15} {'Top10 Avg':>9} {'Top20 Hit':>9} {'Capt Pts':>9} {'Capt Rank':>10} {'Rank Corr':>10}"
+            )
+            lines.append(f"  {'-' * 64}")
 
             for name, scores in result.scores.items():
                 gw_score = [s for s in scores if s.gameweek == gw]
@@ -336,8 +367,10 @@ class ComparativeBacktester:
         lines.append(f"\n{'=' * 75}")
         lines.append(f"  AVERAGES ACROSS {len(result.gameweeks)} GAMEWEEKS")
         lines.append(f"{'=' * 75}")
-        lines.append(f"  {'Model':<15} {'Top10 Avg':>9} {'Top20 Hit':>9} {'Capt Pts':>9} {'Capt Rank':>10} {'Rank Corr':>10}")
-        lines.append(f"  {'-'*64}")
+        lines.append(
+            f"  {'Model':<15} {'Top10 Avg':>9} {'Top20 Hit':>9} {'Capt Pts':>9} {'Capt Rank':>10} {'Rank Corr':>10}"
+        )
+        lines.append(f"  {'-' * 64}")
 
         for name, scores in result.scores.items():
             n = len(scores)
@@ -355,13 +388,33 @@ class ComparativeBacktester:
             )
 
         # Winner per metric
-        lines.append(f"\n  WINNERS:")
+        lines.append("\n  WINNERS:")
         metrics = [
-            ("Top 10 Avg Pts", lambda scores: sum(s.top10_avg_pts for s in scores) / len(scores), True),
-            ("Top 20 Overlap", lambda scores: sum(s.top20_overlap for s in scores) / len(scores), True),
-            ("Captain Pts", lambda scores: sum(s.captain_pts for s in scores) / len(scores), True),
-            ("Captain Rank", lambda scores: sum(s.captain_rank for s in scores) / len(scores), False),
-            ("Rank Correlation", lambda scores: sum(s.rank_correlation for s in scores) / len(scores), True),
+            (
+                "Top 10 Avg Pts",
+                lambda scores: sum(s.top10_avg_pts for s in scores) / len(scores),
+                True,
+            ),
+            (
+                "Top 20 Overlap",
+                lambda scores: sum(s.top20_overlap for s in scores) / len(scores),
+                True,
+            ),
+            (
+                "Captain Pts",
+                lambda scores: sum(s.captain_pts for s in scores) / len(scores),
+                True,
+            ),
+            (
+                "Captain Rank",
+                lambda scores: sum(s.captain_rank for s in scores) / len(scores),
+                False,
+            ),
+            (
+                "Rank Correlation",
+                lambda scores: sum(s.rank_correlation for s in scores) / len(scores),
+                True,
+            ),
         ]
 
         for metric_name, fn, higher_better in metrics:
@@ -371,7 +424,11 @@ class ComparativeBacktester:
                 if not scores:
                     continue
                 val = fn(scores)
-                if best_val is None or (higher_better and val > best_val) or (not higher_better and val < best_val):
+                if (
+                    best_val is None
+                    or (higher_better and val > best_val)
+                    or (not higher_better and val < best_val)
+                ):
                     best_val = val
                     best_name = name
             lines.append(f"    {metric_name:<20} → {best_name}")

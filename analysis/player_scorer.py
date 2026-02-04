@@ -223,9 +223,15 @@ class PlayerScorer:
             bonus += 1.5  # Penalty taker is huge
         elif player.penalties_order is not None and player.penalties_order <= 2:
             bonus += 0.5  # Backup pen taker
-        if player.direct_freekicks_order is not None and player.direct_freekicks_order <= 1:
+        if (
+            player.direct_freekicks_order is not None
+            and player.direct_freekicks_order <= 1
+        ):
             bonus += 0.3
-        if player.corners_and_indirect_freekicks_order is not None and player.corners_and_indirect_freekicks_order <= 1:
+        if (
+            player.corners_and_indirect_freekicks_order is not None
+            and player.corners_and_indirect_freekicks_order <= 1
+        ):
             bonus += 0.2  # Corners = assist potential
         return bonus
 
@@ -272,7 +278,9 @@ class PlayerScorer:
         net_transfers = player.transfers_in_event - player.transfers_out_event
         base = max(0, min(2.0, net_transfers / 50000))
         # Position multipliers: attackers benefit more from momentum
-        pos_mult = {"FWD": 1.5, "MID": 1.2, "DEF": 0.8, "GKP": 0.5}.get(player.position, 1.0)
+        pos_mult = {"FWD": 1.5, "MID": 1.2, "DEF": 0.8, "GKP": 0.5}.get(
+            player.position, 1.0
+        )
         return base * pos_mult
 
     def _calculate_ownership_score(self, player: Player) -> float:
@@ -307,7 +315,9 @@ class PlayerScorer:
         team_form_norm = min(1.0, team.form / 3.0)
 
         # Get fixture ease (0-10) and normalize to 0-1
-        fixture_ease = self.fixtures.get_fixture_ease_score(player.team_id, player.position)
+        fixture_ease = self.fixtures.get_fixture_ease_score(
+            player.team_id, player.position
+        )
         fixture_ease_norm = fixture_ease / 10.0
 
         # Interaction: when both are high, bonus is multiplicative
@@ -448,7 +458,9 @@ class PlayerScorer:
 
         # Calculate interaction weights from config
         interaction_weight = getattr(config, "TEAM_FORM_INTERACTION_WEIGHT", 0.15)
-        ownership_form_weight = getattr(config, "OWNERSHIP_FORM_INTERACTION_WEIGHT", 0.20)
+        ownership_form_weight = getattr(
+            config, "OWNERSHIP_FORM_INTERACTION_WEIGHT", 0.20
+        )
         pure_ownership_mode = getattr(config, "PURE_OWNERSHIP_MODE", False)
 
         # BACKTEST PROVEN: Pure ownership beats all bonus systems
@@ -459,8 +471,10 @@ class PlayerScorer:
                 "set_piece": self._calculate_set_piece_bonus(player),
                 "bonus_magnet": self._calculate_bonus_magnet_score(player),
                 "transfer_momentum": transfer_momentum,
-                "form_fixture_interaction": form_fixture_interaction * interaction_weight,
-                "ownership_form_interaction": ownership_form_interaction * ownership_form_weight,
+                "form_fixture_interaction": form_fixture_interaction
+                * interaction_weight,
+                "ownership_form_interaction": ownership_form_interaction
+                * ownership_form_weight,
             }
 
         overall_score = compute_weighted_score(factors, weights, bonuses)

@@ -12,7 +12,7 @@ This module fetches his squad and suggests moves to mirror him exactly.
 
 import asyncio
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 import aiohttp
 
 # Overall FPL league ID (used to find top-ranked managers)
@@ -27,6 +27,7 @@ MIRROR_MANAGER_TEAM = "The Honest Trundlers"
 @dataclass
 class MirrorAnalysis:
     """Analysis of how to mirror the target manager"""
+
     target_name: str
     target_team: str
     target_rank: int
@@ -55,19 +56,20 @@ class MirrorAnalysis:
 @dataclass
 class BudgetMirrorCandidate:
     """A top-ranked manager whose squad fits within the user's budget."""
+
     entry_id: int
     manager_name: str
     team_name: str
     rank: int
     total_points: int
     gw_points: int
-    squad: List[int]        # 15 player IDs
+    squad: List[int]  # 15 player IDs
     captain: int
     vice_captain: int
     chip_used: Optional[str]
-    squad_cost: float       # Market price sum in £m
-    overlap_count: int      # Players shared with user
-    transfers_needed: int   # Players NOT shared
+    squad_cost: float  # Market price sum in £m
+    overlap_count: int  # Players shared with user
+    transfers_needed: int  # Players NOT shared
 
 
 async def find_budget_mirror_targets(
@@ -97,7 +99,9 @@ async def find_budget_mirror_targets(
     Returns:
         List of BudgetMirrorCandidate sorted by rank (best first).
     """
-    print(f"\033[2m🔍 Scanning top {num_managers} managers for budget-compatible squads...\033[0m")
+    print(
+        f"\033[2m🔍 Scanning top {num_managers} managers for budget-compatible squads...\033[0m"
+    )
 
     user_set = set(user_squad)
     pages_needed = (num_managers + 49) // 50
@@ -107,23 +111,25 @@ async def find_budget_mirror_targets(
         # Step 1: Fetch standings pages
         for page in range(1, pages_needed + 1):
             url = (
-                f'https://fantasy.premierleague.com/api/leagues-classic/'
-                f'{OVERALL_LEAGUE_ID}/standings/?page_standings={page}'
+                f"https://fantasy.premierleague.com/api/leagues-classic/"
+                f"{OVERALL_LEAGUE_ID}/standings/?page_standings={page}"
             )
             try:
                 async with session.get(url, timeout=15) as resp:
                     if resp.status == 200:
                         data = await resp.json()
-                        results = data.get('standings', {}).get('results', [])
+                        results = data.get("standings", {}).get("results", [])
                         for m in results:
                             if len(manager_entries) < num_managers:
-                                manager_entries.append({
-                                    'entry': m['entry'],
-                                    'player_name': m.get('player_name', 'Unknown'),
-                                    'entry_name': m.get('entry_name', 'Unknown'),
-                                    'total': m.get('total', 0),
-                                    'rank': m.get('rank', 0),
-                                })
+                                manager_entries.append(
+                                    {
+                                        "entry": m["entry"],
+                                        "player_name": m.get("player_name", "Unknown"),
+                                        "entry_name": m.get("entry_name", "Unknown"),
+                                        "total": m.get("total", 0),
+                                        "rank": m.get("rank", 0),
+                                    }
+                                )
             except Exception:
                 continue
             await asyncio.sleep(0.5)
@@ -136,7 +142,7 @@ async def find_budget_mirror_targets(
 
         async def _fetch_picks(entry_id: int):
             """Fetch a single manager's picks for current GW."""
-            url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/event/{current_gw}/picks/'
+            url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{current_gw}/picks/"
             try:
                 async with session.get(url, timeout=10) as resp:
                     if resp.status == 200:
@@ -146,23 +152,23 @@ async def find_budget_mirror_targets(
             return None
 
         for i in range(0, len(manager_entries), batch_size):
-            batch = manager_entries[i:i + batch_size]
-            tasks = [_fetch_picks(m['entry']) for m in batch]
+            batch = manager_entries[i : i + batch_size]
+            tasks = [_fetch_picks(m["entry"]) for m in batch]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             for m_info, result in zip(batch, results):
                 if isinstance(result, Exception) or result is None:
                     continue
 
-                picks = result.get('picks', [])
+                picks = result.get("picks", [])
                 if len(picks) != 15:
                     continue
 
-                squad = [p['element'] for p in picks]
-                captain = next((p['element'] for p in picks if p['is_captain']), None)
-                vice = next((p['element'] for p in picks if p['is_vice_captain']), None)
-                chip = result.get('active_chip')
-                gw_points = result.get('entry_history', {}).get('points', 0)
+                squad = [p["element"] for p in picks]
+                captain = next((p["element"] for p in picks if p["is_captain"]), None)
+                vice = next((p["element"] for p in picks if p["is_vice_captain"]), None)
+                chip = result.get("active_chip")
+                gw_points = result.get("entry_history", {}).get("points", 0)
 
                 # Calculate squad cost from local price data
                 cost = sum(player_prices.get(pid, 0.0) for pid in squad)
@@ -178,31 +184,37 @@ async def find_budget_mirror_targets(
                 overlap = len(squad_set & user_set)
                 transfers = len(squad_set - user_set)
 
-                candidates.append(BudgetMirrorCandidate(
-                    entry_id=m_info['entry'],
-                    manager_name=m_info['player_name'],
-                    team_name=m_info['entry_name'],
-                    rank=m_info['rank'],
-                    total_points=m_info['total'],
-                    gw_points=gw_points,
-                    squad=squad,
-                    captain=captain,
-                    vice_captain=vice,
-                    chip_used=chip,
-                    squad_cost=cost,
-                    overlap_count=overlap,
-                    transfers_needed=transfers,
-                ))
+                candidates.append(
+                    BudgetMirrorCandidate(
+                        entry_id=m_info["entry"],
+                        manager_name=m_info["player_name"],
+                        team_name=m_info["entry_name"],
+                        rank=m_info["rank"],
+                        total_points=m_info["total"],
+                        gw_points=gw_points,
+                        squad=squad,
+                        captain=captain,
+                        vice_captain=vice,
+                        chip_used=chip,
+                        squad_cost=cost,
+                        overlap_count=overlap,
+                        transfers_needed=transfers,
+                    )
+                )
 
             if (i + batch_size) % 100 == 0:
-                print(f"\033[2m   Processed {min(i + batch_size, len(manager_entries))}/{len(manager_entries)} managers...\033[0m")
+                print(
+                    f"\033[2m   Processed {min(i + batch_size, len(manager_entries))}/{len(manager_entries)} managers...\033[0m"
+                )
 
             await asyncio.sleep(1.0)
 
     # Sort by rank (best first) and return top N
     candidates.sort(key=lambda c: c.rank)
     result = candidates[:max_candidates]
-    print(f"\033[92m   Found {len(candidates)} budget-compatible squads, returning top {len(result)}\033[0m")
+    print(
+        f"\033[92m   Found {len(candidates)} budget-compatible squads, returning top {len(result)}\033[0m"
+    )
     return result
 
 
@@ -215,20 +227,20 @@ async def fetch_manager_squad(
 
     Returns: (squad_ids, captain_id, vice_captain_id, chip_used, gw_points)
     """
-    url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/event/{gameweek}/picks/'
+    url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/event/{gameweek}/picks/"
 
     try:
         async with session.get(url, timeout=15) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                picks = data.get('picks', [])
+                picks = data.get("picks", [])
 
-                squad = [p['element'] for p in picks]
-                captain = next((p['element'] for p in picks if p['is_captain']), None)
-                vice = next((p['element'] for p in picks if p['is_vice_captain']), None)
+                squad = [p["element"] for p in picks]
+                captain = next((p["element"] for p in picks if p["is_captain"]), None)
+                vice = next((p["element"] for p in picks if p["is_vice_captain"]), None)
 
-                chip = data.get('active_chip')
-                gw_points = data.get('entry_history', {}).get('points', 0)
+                chip = data.get("active_chip")
+                gw_points = data.get("entry_history", {}).get("points", 0)
 
                 return squad, captain, vice, chip, gw_points
     except Exception as e:
@@ -245,21 +257,21 @@ async def fetch_manager_info(
 
     Returns: (rank, total_points, chips_used)
     """
-    url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/'
+    url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/"
 
     try:
         async with session.get(url, timeout=15) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                rank = data.get('summary_overall_rank', 0)
-                points = data.get('summary_overall_points', 0)
+                rank = data.get("summary_overall_rank", 0)
+                points = data.get("summary_overall_points", 0)
 
         # Get chips from history
-        history_url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/history/'
+        history_url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/history/"
         async with session.get(history_url, timeout=15) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                chips = data.get('chips', [])
+                chips = data.get("chips", [])
                 return rank, points, chips
 
     except Exception as e:
@@ -273,7 +285,7 @@ async def fetch_manager_transfers(
     entry_id: int,
 ) -> List[dict]:
     """Fetch manager's transfer history."""
-    url = f'https://fantasy.premierleague.com/api/entry/{entry_id}/transfers/'
+    url = f"https://fantasy.premierleague.com/api/entry/{entry_id}/transfers/"
 
     try:
         async with session.get(url, timeout=15) as resp:
@@ -313,7 +325,9 @@ async def analyze_mirror(
             return None
 
         # Fetch his rank and chips
-        rank, total_pts, chips_used = await fetch_manager_info(session, MIRROR_MANAGER_ID)
+        rank, total_pts, chips_used = await fetch_manager_info(
+            session, MIRROR_MANAGER_ID
+        )
 
         print(f"✓ {MIRROR_MANAGER_NAME} is rank #{rank:,} with {total_pts} pts")
 
@@ -420,7 +434,7 @@ def format_mirror_analysis(
     lines.append("")
     lines.append("=" * 65)
     lines.append(f"  MIRROR MODE: {analysis.target_name}")
-    lines.append(f"  \"{analysis.target_team}\"")
+    lines.append(f'  "{analysis.target_team}"')
     lines.append("=" * 65)
     lines.append("")
     lines.append(f"  Current Rank:  #{analysis.target_rank:,}")
@@ -434,7 +448,7 @@ def format_mirror_analysis(
         lines.append("")
 
     # Squad comparison
-    lines.append(f"  SQUAD COMPARISON:")
+    lines.append("  SQUAD COMPARISON:")
     lines.append(f"    Transfers needed:  {analysis.transfers_needed}")
     lines.append("")
 
@@ -442,8 +456,12 @@ def format_mirror_analysis(
         lines.append("  ✅ Your squad matches perfectly!")
     else:
         if analysis.recommend_free_hit:
-            lines.append(f"  ⚠️  RECOMMEND FREE HIT ({analysis.transfers_needed} transfers needed)")
-            lines.append(f"     Threshold: {analysis.free_hit_threshold}+ transfers = use Free Hit")
+            lines.append(
+                f"  ⚠️  RECOMMEND FREE HIT ({analysis.transfers_needed} transfers needed)"
+            )
+            lines.append(
+                f"     Threshold: {analysis.free_hit_threshold}+ transfers = use Free Hit"
+            )
             lines.append("")
 
         lines.append("  TRANSFERS TO MATCH:")
@@ -461,8 +479,12 @@ def format_mirror_analysis(
 
     # Captain
     lines.append("")
-    captain_name = player_names.get(analysis.target_captain, f"Player {analysis.target_captain}")
-    vice_name = player_names.get(analysis.target_vice_captain, f"Player {analysis.target_vice_captain}")
+    captain_name = player_names.get(
+        analysis.target_captain, f"Player {analysis.target_captain}"
+    )
+    vice_name = player_names.get(
+        analysis.target_vice_captain, f"Player {analysis.target_vice_captain}"
+    )
 
     lines.append(f"  CAPTAIN: {captain_name}")
     lines.append(f"  VICE:    {vice_name}")
@@ -486,12 +508,12 @@ def format_mirror_analysis(
             marker = " (V)"
 
         if i < 11:
-            lines.append(f"    {i+1:2}. {name}{marker}")
+            lines.append(f"    {i + 1:2}. {name}{marker}")
         elif i == 11:
             lines.append("    --- Bench ---")
-            lines.append(f"    {i+1:2}. {name}{marker}")
+            lines.append(f"    {i + 1:2}. {name}{marker}")
         else:
-            lines.append(f"    {i+1:2}. {name}{marker}")
+            lines.append(f"    {i + 1:2}. {name}{marker}")
 
     # Chips used
     lines.append("")
@@ -521,7 +543,7 @@ async def get_ian_weekly_moves(current_gw: int) -> Optional[dict]:
         transfers = await fetch_manager_transfers(session, MIRROR_MANAGER_ID)
 
         # Filter to this GW
-        gw_transfers = [t for t in transfers if t.get('event') == current_gw]
+        gw_transfers = [t for t in transfers if t.get("event") == current_gw]
 
         # Get squad info
         squad, captain, vice, chip, pts = await fetch_manager_squad(
@@ -529,13 +551,13 @@ async def get_ian_weekly_moves(current_gw: int) -> Optional[dict]:
         )
 
         return {
-            'transfers_in': [t['element_in'] for t in gw_transfers],
-            'transfers_out': [t['element_out'] for t in gw_transfers],
-            'captain': captain,
-            'vice_captain': vice,
-            'chip': chip,
-            'gw_points': pts,
-            'squad': squad,
+            "transfers_in": [t["element_in"] for t in gw_transfers],
+            "transfers_out": [t["element_out"] for t in gw_transfers],
+            "captain": captain,
+            "vice_captain": vice,
+            "chip": chip,
+            "gw_points": pts,
+            "squad": squad,
         }
 
 
@@ -543,7 +565,23 @@ if __name__ == "__main__":
     # Test the module
     async def test():
         # Dummy squad for testing
-        test_squad = [1, 5, 106, 373, 151, 283, 328, 355, 401, 427, 579, 116, 245, 308, 446]
+        test_squad = [
+            1,
+            5,
+            106,
+            373,
+            151,
+            283,
+            328,
+            355,
+            401,
+            427,
+            579,
+            116,
+            245,
+            308,
+            446,
+        ]
 
         analysis = await analyze_mirror(test_squad, current_gw=24)
 
