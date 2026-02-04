@@ -1436,8 +1436,8 @@ def _best_lineup(
 
     starting_ids = set(pid for pid, _, _ in best_starting)
     bench = [(pid, p, sp) for pid, p, sp in players if pid not in starting_ids]
-    # Bench order: GKP last (auto-sub rules), then by score descending
-    bench.sort(key=lambda x: (x[1].position == "GKP", -x[2].overall_score))
+    # Bench order: GKP first (position 12 required by FPL), then outfield by score desc
+    bench.sort(key=lambda x: (x[1].position != "GKP", -x[2].overall_score))
 
     return (
         [pid for pid, _, _ in best_starting],
@@ -1576,6 +1576,8 @@ def prompt_lineup(
                     continue
 
                 starting = new_starting
+                # Enforce bench GKP at position 12 (FPL requirement)
+                new_bench.sort(key=lambda pid: (fpl.get_player(pid).position != "GKP" if fpl.get_player(pid) else True))
                 bench = new_bench
                 a_name = fpl.get_player(a_pid).web_name if fpl.get_player(a_pid) else "?"
                 b_name = fpl.get_player(b_pid).web_name if fpl.get_player(b_pid) else "?"
