@@ -317,6 +317,52 @@ class FPLActions:
                 print(f"❌ Failed to activate chip: {text[:100]}")
                 return False
 
+    async def set_lineup(
+        self,
+        starting: List[int],
+        bench: List[int],
+        captain_id: int,
+        vice_captain_id: int,
+    ) -> bool:
+        """Set the starting 11 and bench order.
+
+        Args:
+            starting: 11 player IDs for the starting lineup.
+            bench: 4 player IDs in bench order (1st sub, 2nd sub, ...).
+            captain_id: Captain player ID.
+            vice_captain_id: Vice captain player ID.
+
+        Returns True on success.
+        """
+        self._check_login()
+
+        if len(starting) != 11 or len(bench) != 4:
+            print(f"❌ Invalid lineup: need 11 starters + 4 bench, got {len(starting)} + {len(bench)}")
+            return False
+
+        ordered = list(starting) + list(bench)
+
+        picks = []
+        for i, pid in enumerate(ordered):
+            picks.append({
+                "element": pid,
+                "position": i + 1,
+                "is_captain": pid == captain_id,
+                "is_vice_captain": pid == vice_captain_id,
+            })
+
+        url = f"{self.BASE_URL}/my-team/{self.team_id}/"
+        payload = {"picks": picks}
+
+        async with self._session.post(url, json=payload) as resp:
+            if resp.status in (200, 202):
+                print("✓ Lineup set successfully")
+                return True
+            else:
+                text = await resp.text()
+                print(f"❌ Failed to set lineup (HTTP {resp.status}): {text[:200]}")
+                return False
+
     async def get_remaining_budget(self) -> float:
         """Get remaining transfer budget"""
         self._check_login()

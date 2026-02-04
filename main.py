@@ -88,8 +88,8 @@ def c_value(text: str) -> str:
     return f"{C.BMAGENTA}{text}{C.RESET}"
 
 def c_prompt(text: str) -> str:
-    """Bold yellow for user prompts."""
-    return f"{C.BOLD}{C.BYELLOW}{text}{C.RESET}"
+    """Bold pink on dark background for user prompts — unmissable."""
+    return f"\033[1m\033[38;5;205m\033[48;5;53m{text}\033[0m"
 
 def c_option(text: str) -> str:
     """Blue for selectable options."""
@@ -262,6 +262,12 @@ def parse_args():
         type=int,
         default=4,
         help="Number of transfers above which to recommend Free Hit (default: 4)",
+    )
+
+    parser.add_argument(
+        "--lineup",
+        action="store_true",
+        help="Set your starting 11 and bench order (requires login)",
     )
 
     return parser.parse_args()
@@ -1369,6 +1375,221 @@ def prompt_captain(
     return (captain_id, vc_id)
 
 
+# Valid FPL formations: (DEF, MID, FWD)
+VALID_FORMATIONS = [
+    (3, 4, 3), (3, 5, 2), (4, 3, 3), (4, 4, 2), (4, 5, 1),
+    (5, 3, 2), (5, 4, 1), (5, 2, 3),
+]
+
+
+def _best_lineup(
+    squad_ids: List[int],
+    fpl: FPLDataFetcher,
+    scorer: "PlayerScorer",
+    captain_id: Optional[int] = None,
+) -> tuple:
+    """Pick the optimal starting 11 from a 15-man squad.
+
+    Returns (starting_11_ids, bench_4_ids) where bench is ordered by score
+    descending (best sub first).
+    """
+    # Score all players
+    players = []
+    for pid in squad_ids:
+        p = fpl.get_player(pid)
+        if p:
+            sp = scorer.score_player(p)
+            players.append((pid, p, sp))
+
+    by_pos = {}
+    for pid, p, sp in players:
+        by_pos.setdefault(p.position, []).append((pid, p, sp))
+
+    # Sort each position by score descending
+    for pos in by_pos:
+        by_pos[pos].sort(key=lambda x: x[2].overall_score, reverse=True)
+
+    gkps = by_pos.get("GKP", [])
+    defs = by_pos.get("DEF", [])
+    mids = by_pos.get("MID", [])
+    fwds = by_pos.get("FWD", [])
+
+    best_score = -1
+    best_starting = None
+    best_bench = None
+
+    for n_def, n_mid, n_fwd in VALID_FORMATIONS:
+        if n_def > len(defs) or n_mid > len(mids) or n_fwd > len(fwds) or len(gkps) < 1:
+            continue
+
+        starting = [gkps[0]] + defs[:n_def] + mids[:n_mid] + fwds[:n_fwd]
+        total = sum(sp.overall_score for _, _, sp in starting)
+
+        if total > best_score:
+            best_score = total
+            best_starting = starting
+
+    if not best_starting:
+        # Fallback: just pick top 11 by score
+        all_sorted = sorted(players, key=lambda x: x[2].overall_score, reverse=True)
+        best_starting = all_sorted[:11]
+
+    starting_ids = set(pid for pid, _, _ in best_starting)
+    bench = [(pid, p, sp) for pid, p, sp in players if pid not in starting_ids]
+    # Bench order: GKP last (auto-sub rules), then by score descending
+    bench.sort(key=lambda x: (x[1].position == "GKP", -x[2].overall_score))
+
+    return (
+        [pid for pid, _, _ in best_starting],
+        [pid for pid, _, _ in bench],
+    )
+
+
+def prompt_lineup(
+    fpl: FPLDataFetcher,
+    scorer: "PlayerScorer",
+    squad_ids: List[int],
+    captain_id: Optional[int] = None,
+    vc_id: Optional[int] = None,
+) -> Optional[tuple]:
+    """Phase 3: Set starting 11 and bench order.
+
+    Returns (starting_11, bench_4, captain_id, vc_id) or None if skipped.
+    """
+    print(c_header("\n" + "=" * 60))
+    print(c_header("  PHASE 3: STARTING LINEUP"))
+    print(c_header("=" * 60))
+
+    # Auto-optimize lineup
+    starting, bench = _best_lineup(squad_ids, fpl, scorer, captain_id)
+
+    # If no captain set, pick the highest-scored starter (excluding GKP)
+    if not captain_id:
+        best_score = -1
+        for pid in starting:
+            p = fpl.get_player(pid)
+            if p and p.position != "GKP":
+                sp = scorer.score_player(p)
+                if sp.overall_score > best_score:
+                    best_score = sp.overall_score
+                    captain_id = pid
+    if not vc_id:
+        # Second-best outfield starter
+        best_score = -1
+        for pid in starting:
+            p = fpl.get_player(pid)
+            if p and p.position != "GKP" and pid != captain_id:
+                sp = scorer.score_player(p)
+                if sp.overall_score > best_score:
+                    best_score = sp.overall_score
+                    vc_id = pid
+    if not vc_id:
+        vc_id = captain_id
+
+    def _display_lineup(starting, bench):
+        print(f"\n  {c_label('STARTING XI:')}")
+        idx = 1
+        for pos in ["GKP", "DEF", "MID", "FWD"]:
+            pos_players = []
+            for pid in starting:
+                p = fpl.get_player(pid)
+                if p and p.position == pos:
+                    sp = scorer.score_player(p)
+                    cap = " (C)" if pid == captain_id else (" (V)" if pid == vc_id else "")
+                    pos_players.append((idx, p, sp, cap))
+                    idx += 1
+            if pos_players:
+                print(f"  {c_debug(pos)}:")
+                for i, p, sp, cap in pos_players:
+                    print(f"   {i:2}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_value(f'{sp.overall_score:.1f}')}{cap}")
+
+        # Formation
+        pos_counts = {}
+        for pid in starting:
+            p = fpl.get_player(pid)
+            if p:
+                pos_counts[p.position] = pos_counts.get(p.position, 0) + 1
+        formation = f"{pos_counts.get('DEF', 0)}-{pos_counts.get('MID', 0)}-{pos_counts.get('FWD', 0)}"
+        print(f"\n  Formation: {c_value(formation)}")
+
+        print(f"\n  {c_label('BENCH')} (sub order):")
+        for i, pid in enumerate(bench, 12):
+            p = fpl.get_player(pid)
+            if p:
+                sp = scorer.score_player(p)
+                print(f"   {i}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_debug(f'{sp.overall_score:.1f}')}")
+
+    _display_lineup(starting, bench)
+
+    while True:
+        print(c_prompt(f"\n  [Enter=accept, swap <a> <b>, s=skip, q=quit]: "), end="")
+        choice = checked_input().strip().lower()
+
+        if choice == "s":
+            print(c_debug("  Skipping lineup."))
+            return None
+
+        if not choice:
+            print(c_success(f"  ✓ Lineup accepted"))
+            return starting, bench, captain_id, vc_id
+
+        if choice.startswith("swap"):
+            parts = choice.split()
+            if len(parts) != 3:
+                print("  Usage: swap <number> <number>  (e.g. swap 3 12)")
+                continue
+            try:
+                a_idx = int(parts[1])
+                b_idx = int(parts[2])
+                all_players = starting + bench
+                if a_idx < 1 or a_idx > 15 or b_idx < 1 or b_idx > 15:
+                    print(f"  Numbers must be 1-15")
+                    continue
+
+                a_pid = all_players[a_idx - 1]
+                b_pid = all_players[b_idx - 1]
+
+                # Swap them
+                all_players[a_idx - 1] = b_pid
+                all_players[b_idx - 1] = a_pid
+
+                new_starting = all_players[:11]
+                new_bench = all_players[11:]
+
+                # Validate formation
+                pos_counts = {}
+                for pid in new_starting:
+                    p = fpl.get_player(pid)
+                    if p:
+                        pos_counts[p.position] = pos_counts.get(p.position, 0) + 1
+
+                n_gkp = pos_counts.get("GKP", 0)
+                n_def = pos_counts.get("DEF", 0)
+                n_mid = pos_counts.get("MID", 0)
+                n_fwd = pos_counts.get("FWD", 0)
+
+                if n_gkp != 1:
+                    print(c_warn(f"  Invalid: need exactly 1 GKP in starting XI, got {n_gkp}"))
+                    continue
+                if (n_def, n_mid, n_fwd) not in VALID_FORMATIONS:
+                    print(c_warn(f"  Invalid formation: {n_def}-{n_mid}-{n_fwd}"))
+                    continue
+
+                starting = new_starting
+                bench = new_bench
+                a_name = fpl.get_player(a_pid).web_name if fpl.get_player(a_pid) else "?"
+                b_name = fpl.get_player(b_pid).web_name if fpl.get_player(b_pid) else "?"
+                print(c_success(f"  Swapped: {a_name} ↔ {b_name}"))
+                _display_lineup(starting, bench)
+
+            except (ValueError, IndexError):
+                print("  Usage: swap <number> <number>")
+        else:
+            print("  Commands: swap <a> <b>, Enter=accept, s=skip, q=quit")
+
+    return None
+
+
 async def prompt_review_and_execute(
     fpl_actions: "FPLActions",
     transfers: List[TransferRecommendation],
@@ -1376,13 +1597,15 @@ async def prompt_review_and_execute(
     vc_id: Optional[int],
     chip_to_play,
     current_gw: int,
+    lineup: Optional[tuple] = None,
 ):
-    """Phase 3: Final review and execute.
+    """Phase 4: Final review and execute.
 
     Uses the already-authenticated FPLActions session from the initial login.
+    ``lineup`` is (starting_11, bench_4, captain_id, vc_id) or None.
     """
     print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 3: REVIEW & EXECUTE"))
+    print(c_header("  PHASE 4: REVIEW & EXECUTE"))
     print(c_header("=" * 60))
 
     actions = []
@@ -1410,6 +1633,9 @@ async def prompt_review_and_execute(
     if chip_value:
         actions.append(f"Activate: {chip_value.replace('_', ' ').title()}")
 
+    if lineup:
+        actions.append("Set starting lineup & bench order")
+
     if not actions:
         print("\n  No actions to execute.")
         return
@@ -1418,7 +1644,8 @@ async def prompt_review_and_execute(
     for i, action in enumerate(actions, 1):
         print(f"   {i}. {action}")
 
-    confirm = checked_input("\nExecute? [Enter/y=yes, n=cancel, q=quit]: ").strip().lower()
+    print(c_prompt("\n  Execute? [Enter/y=yes, n=cancel, q=quit]: "), end="")
+    confirm = checked_input().strip().lower()
     if confirm == "n":
         print("  Cancelled.")
         return
@@ -1447,6 +1674,12 @@ async def prompt_review_and_execute(
     # Activate chip (if not already used via transfer)
     if chip_value in ("triple_captain", "bench_boost"):
         if not await fpl_actions.activate_chip(chip_value, current_gw + 1):
+            all_ok = False
+
+    # Set lineup (starting 11 + bench order)
+    if lineup:
+        lu_starting, lu_bench, lu_cap, lu_vc = lineup
+        if not await fpl_actions.set_lineup(lu_starting, lu_bench, lu_cap, lu_vc):
             all_ok = False
 
     if all_ok:
@@ -1513,7 +1746,7 @@ async def interactive_auto_mode(
     team_id: int,
     current_gw: int,
 ):
-    """Interactive 4-phase auto-pilot mode."""
+    """Interactive auto-pilot mode (Phases 0–4)."""
     print("\n" + c_header("=" * 60))
     print(c_header("  AUTO-PILOT MODE (Interactive)"))
     print(c_header("=" * 60))
@@ -1713,7 +1946,13 @@ async def interactive_auto_mode(
         )
         captain_id, vc_id = prompt_captain(recommender, captain_picks, captain_squad_ids)
 
-        # Phase 3: Review and execute (reuses the existing authenticated session)
+        # Phase 3: Lineup (starting 11 + bench order)
+        lineup_result = prompt_lineup(
+            fpl, recommender.scorer, captain_squad_ids,
+            captain_id=captain_id, vc_id=vc_id,
+        )
+
+        # Phase 4: Review and execute (reuses the existing authenticated session)
         if not logged_in:
             # Initial login failed — try once more before executing
             print("\n🔐 Re-authenticating for execution...")
@@ -1723,6 +1962,7 @@ async def interactive_auto_mode(
             await prompt_review_and_execute(
                 fpl_actions, chosen_transfers,
                 captain_id, vc_id, chip_to_play, current_gw,
+                lineup=lineup_result,
             )
         else:
             print(c_error("❌ Cannot execute — login failed"))
@@ -1808,7 +2048,7 @@ async def main_async(args):
     is_auto_or_default = not any([
         args.evaluate, args.compare, args.backtest, args.league_spy,
         args.quiet, args.differentials, args.fixtures, args.top_players,
-        args.chip_strategy, args.my_team,
+        args.chip_strategy, args.my_team, args.lineup,
     ])
     if args.team_id and is_auto_or_default:
         try:
@@ -2104,14 +2344,54 @@ async def main_async(args):
                 print(f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})")
                 print(f"   Consider replacing in upcoming transfers")
 
-    elif args.auto:
-        # Interactive auto-pilot mode
+    elif args.lineup:
+        # Standalone lineup setter
         if not args.team_id:
-            print("❌ --team-id required for auto mode")
+            print(c_error("❌ --team-id required for lineup mode"))
             return
 
         if not squad_ids:
-            print("❌ Could not fetch squad")
+            print(c_error("❌ Could not fetch squad"))
+            return
+
+        fpl_actions = FPLActions(args.team_id)
+        try:
+            print(c_debug("\n🔐 Logging in to set lineup..."))
+            if not await fpl_actions.login():
+                print(c_error("❌ Login failed — cannot set lineup"))
+                return
+
+            # Use authenticated squad if possible (includes pending transfers)
+            auth_squad = await fpl_actions.get_current_squad()
+            if auth_squad:
+                squad_ids = auth_squad
+
+            # Get current captain/vc from picks
+            cap_id = vc_id = None
+            if squad_picks:
+                for pk in squad_picks:
+                    if pk.get("is_captain"):
+                        cap_id = pk["element"]
+                    if pk.get("is_vice_captain"):
+                        vc_id = pk["element"]
+
+            result = prompt_lineup(fpl, scorer, squad_ids, captain_id=cap_id, vc_id=vc_id)
+            if result:
+                starting, bench, cap_id, vc_id = result
+                await fpl_actions.set_lineup(starting, bench, cap_id, vc_id)
+        except UserCancelled:
+            print("\n  Cancelled. No changes were made.")
+        finally:
+            await fpl_actions.close()
+
+    elif args.auto:
+        # Interactive auto-pilot mode
+        if not args.team_id:
+            print(c_error("❌ --team-id required for auto mode"))
+            return
+
+        if not squad_ids:
+            print(c_error("❌ Could not fetch squad"))
             return
 
         await interactive_auto_mode(
