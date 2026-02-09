@@ -35,6 +35,7 @@ from output.recommendations import (
     TransferRecommendation,
     CaptainPick,
 )
+from data.session_log import SessionLog
 
 # Version and model info
 VERSION = "1.0.0"
@@ -294,6 +295,12 @@ def parse_args():
         "--lineup",
         action="store_true",
         help="Set your starting 11 and bench order (requires login)",
+    )
+
+    parser.add_argument(
+        "--logs",
+        action="store_true",
+        help="View past session logs (recommendations history)",
     )
 
     return parser.parse_args()
@@ -1968,6 +1975,10 @@ async def interactive_auto_mode(
     print(c_header("  AUTO-PILOT MODE (Interactive)"))
     print(c_header("=" * 60))
 
+    # Initialize session log
+    session_log = SessionLog(gameweek=current_gw, team_id=team_id)
+    session_log.set_model_version(VERSION, MODEL_NAME)
+
     # Display model performance summary
     display_model_performance()
 
@@ -2106,6 +2117,10 @@ async def interactive_auto_mode(
         captain_squad_ids = squad_ids  # IDs used for captain picks
         chip_to_play = None
 
+        # Log initial squad and chip
+        session_log.set_squad_before(squad_ids, player_names)
+        session_log.set_chip(selected_chip)
+
         if selected_chip == "free_hit":
             # Phase 1-FH: Free Hit squad builder with mirror options
             chosen_transfers, captain_squad_ids = prompt_free_hit_squad(
@@ -2169,12 +2184,46 @@ async def interactive_auto_mode(
                     captain_squad_ids.remove(out_id)
                     captain_squad_ids.append(in_id)
 
+        # Log transfers
+        for tr in chosen_transfers or []:
+            session_log.add_transfer(
+                tr.player_out.player.id,
+                tr.player_out.player.web_name,
+                tr.player_in.player.id,
+                tr.player_in.player.web_name,
+                tr.score_gain,
+            )
+
+        # Log squad after transfers
+        session_log.set_squad_after(captain_squad_ids, player_names)
+
         # Phase 2: Captain (uses post-transfer squad IDs)
         captain_picks = recommender.get_captain_picks(
             captain_squad_ids, limit=config.TOP_CAPTAINS
         )
+
+        # Log captain options before user chooses
+        session_log.set_captain_options([
+            {
+                "id": cp.player.player.id,
+                "name": cp.player.player.web_name,
+                "expected_points": cp.expected_points,
+                "ownership": cp.player.player.selected_by_percent,
+                "form": cp.player.player.form,
+            }
+            for cp in captain_picks
+        ])
+
         captain_id, vc_id = prompt_captain(
             recommender, captain_picks, captain_squad_ids
+        )
+
+        # Log captain choice
+        session_log.set_captain_chosen(
+            captain_id,
+            player_names.get(captain_id, f"ID:{captain_id}"),
+            vc_id,
+            player_names.get(vc_id, f"ID:{vc_id}"),
         )
 
         # Phase 3: Lineup (starting 11 + bench order)
@@ -2202,13 +2251,24 @@ async def interactive_auto_mode(
                 current_gw,
                 lineup=lineup_result,
             )
+            session_log.set_execution_status("executed")
         else:
             print(c_error("❌ Cannot execute — login failed"))
+            session_log.set_execution_status("failed", "login failed")
 
     except UserCancelled:
         print("\n\n  Cancelled. No changes were made.")
+        session_log.set_execution_status("cancelled", "user cancelled")
 
     finally:
+        # Save session log
+        try:
+            log_path = session_log.save()
+            print(c_debug(f"\n📝 Session log saved: {log_path}"))
+            print(session_log.format_summary())
+        except Exception as e:
+            print(c_warn(f"   Could not save session log: {e}"))
+
         # Clean up the session
         await fpl_actions.close()
 
@@ -2632,6 +2692,55 @@ async def main_async(args):
                     f"\n⚠️  Weakest link: {weakest['player'].web_name} (Score: {weakest['scored'].overall_score:.1f})"
                 )
                 print("   Consider replacing in upcoming transfers")
+
+    elif args.logs:
+        # View past session logs
+        from data.session_log import list_logs, get_latest_log
+
+        logs = list_logs()
+        if not logs:
+            print("\n  No session logs found. Run --auto to generate logs.")
+            return
+
+        print(c_header("\n" + "=" * 60))
+        print(c_header("  SESSION LOGS"))
+        print(c_header("=" * 60))
+
+        print(f"\n  Found {len(logs)} session log(s):\n")
+        for i, log in enumerate(logs[:10], 1):
+            chip_str = f" [{log['chip']}]" if log['chip'] else ""
+            cap_str = f" Captain: {log['captain']}" if log['captain'] else ""
+            print(f"  {i}. GW{log['gameweek']} - {log['timestamp'][:16]}{chip_str}{cap_str}")
+            print(f"     File: {log['file']}")
+
+        # Show latest log details
+        latest = get_latest_log()
+        if latest:
+            print(c_header("\n" + "-" * 60))
+            print(c_header("  LATEST SESSION DETAILS"))
+            print(c_header("-" * 60))
+
+            print(f"\n  Gameweek: {latest.get('gameweek')}")
+            print(f"  Chip: {latest.get('chip_used') or 'None'}")
+
+            cap = latest.get("captain_chosen", {})
+            if cap:
+                print(f"  Captain: {cap.get('name')}")
+
+            opts = latest.get("captain_options", [])
+            if opts:
+                print("\n  Captain Options (model ranking):")
+                for i, opt in enumerate(opts[:5], 1):
+                    chosen = " <- CHOSEN" if cap and opt["id"] == cap.get("id") else ""
+                    print(
+                        f"    {i}. {opt['name']:15} "
+                        f"exp:{opt.get('expected_points', 0):.1f} "
+                        f"own:{opt.get('ownership', 0):.1f}%{chosen}"
+                    )
+
+            status = latest.get("execution_status", {})
+            if status:
+                print(f"\n  Execution: {status.get('status', 'unknown')}")
 
     elif args.lineup:
         # Standalone lineup setter

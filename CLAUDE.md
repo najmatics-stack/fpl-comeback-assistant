@@ -10,6 +10,7 @@ python3 main.py                    # Full recommendations (default)
 python3 main.py --auto             # Auto-pilot: execute transfers/captain/chips
 python3 main.py --my-team          # Squad analysis with ratings
 python3 main.py --league-spy       # Rival squad intel
+python3 main.py --logs             # View past session logs (post-GW analysis)
 python3 main.py --backtest 18-22   # Blind backtest over GW range
 python3 main.py --evaluate 20      # Evaluate + auto-tune weights for GW
 python3 main.py --compare 18,19,20 # Compare model vs baselines
@@ -73,3 +74,28 @@ All authenticated API calls require `Cookie`, `X-CSRFToken`, `Referer`, `Origin`
 ## Config (`config.py`)
 
 Scoring weights, differential thresholds, fixture lookahead, cache TTL, expected BGW/DGW gameweeks, and display limits. `TEAM_ID = 7907269` is the default team.
+
+## Lessons Learned (Post-GW Analysis)
+
+### GW25 (2024-25 Season) — Free Hit Disaster
+
+**What happened:**
+- Captained Enzo (2 pts x2 = 4) instead of Haaland (11 pts x2 = 22)
+- Lost 18 points on captain choice alone
+- Total: 51 pts on a Free Hit — well below average
+
+**Root causes:**
+1. Captain selection over-weighted differentials/punts over proven premiums
+2. Model didn't respect the "obvious pick" heuristic — Haaland at 69% ownership with good fixtures is the safe, correct choice
+3. Free Hit squad included too many low-floor players (Mukiele, Guéhi, Cash, Bowen, Evanilson all returned 1-2 pts)
+
+**Model improvements needed:**
+1. **Captain safety floor**: On chips (especially Free Hit), default to highest-owned premium (Salah/Haaland) unless there's a compelling reason not to (injury doubt, terrible fixture, etc.)
+2. **"Don't overthink it" heuristic**: If a player is >50% owned AND has good form AND has a good fixture, they should be heavily favored for captaincy
+3. **Free Hit squad construction**: Prioritize high-floor players over punts — the goal is to maximize expected points, not chase differentials
+4. **Ownership × Form interaction**: Captain picks should weight `ownership * form` more heavily — the crowd is often right on obvious weeks
+
+**Actionable code changes:**
+- Add `captain_safety_multiplier` for >50% owned premiums on chip weeks
+- Reduce `differential_bonus` for captain selection (differentials matter for transfers, not captaincy)
+- Log all recommendations for post-GW analysis
