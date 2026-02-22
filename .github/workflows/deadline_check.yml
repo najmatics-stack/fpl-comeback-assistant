@@ -1,0 +1,40 @@
+name: FPL Deadline Notifier
+
+on:
+  schedule:
+    # Runs every 6 hours — hits each notification window (48h/24h/6h) exactly once
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    # Allows manual trigger from GitHub Actions UI (useful for testing)
+    inputs:
+      test_mode:
+        description: 'Send a test notification'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  check-deadline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install aiohttp
+
+      - name: Check FPL deadline and notify
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ "${{ github.event.inputs.test_mode }}" = "true" ]; then
+            python3 check_deadline.py --test
+          else
+            python3 check_deadline.py
+          fi
