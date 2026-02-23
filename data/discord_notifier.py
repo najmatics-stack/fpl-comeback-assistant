@@ -1,14 +1,14 @@
 """
 Discord webhook notifications for FPL deadline alerts.
-Uses stdlib only — no extra dependencies.
 """
 
 import json
-import urllib.request
 from datetime import datetime, timezone
 
+import aiohttp
 
-def send_deadline_alert(
+
+async def send_deadline_alert(
     webhook_url: str,
     gw_name: str,
     gw_number: int,
@@ -66,15 +66,13 @@ def send_deadline_alert(
     }
 
     try:
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            return resp.status in (200, 204)
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                webhook_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status in (200, 204)
     except Exception as e:
         print(f"[discord_notifier] Failed to send: {e}")
         return False

@@ -57,7 +57,7 @@ async def main() -> None:
     # --test flag: send a test message and exit
     if "--test" in sys.argv:
         now = int(datetime.now(timezone.utc).timestamp())
-        success = send_deadline_alert(
+        success = await send_deadline_alert(
             webhook_url=webhook_url,
             gw_name="Gameweek 99 (TEST)",
             gw_number=99,
@@ -92,7 +92,7 @@ async def main() -> None:
     for upper, lower, label in NOTIFICATION_WINDOWS:
         if lower < seconds_remaining <= upper:
             print(f"→ In '{label}' window — sending Discord notification...")
-            success = send_deadline_alert(
+            success = await send_deadline_alert(
                 webhook_url=webhook_url,
                 gw_name=gw_info["name"],
                 gw_number=gw_info["gw"],
