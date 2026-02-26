@@ -35,6 +35,7 @@ async def send_deadline_alert(
         color = 0xFFCC00  # yellow
 
     payload = {
+        "content": "@everyone",
         "embeds": [
             {
                 "title": f"🚨 FPL Deadline in {window_label}!",
