@@ -113,6 +113,9 @@ TOP_TRANSFERS = 5  # Number of transfer suggestions to show
 TOP_CAPTAINS = 3  # Number of captain options to show
 TOP_DIFFERENTIALS = 5  # Number of differentials per position
 
+# Debug mode (set via --debug flag)
+DEBUG = False
+
 # Auto-mode defaults
 AUTO_MAX_HITS = 1  # Max hits allowed (each hit = -4 pts)
 AUTO_MIN_SCORE_GAIN_FREE = 0.5  # Min score gain for free transfers

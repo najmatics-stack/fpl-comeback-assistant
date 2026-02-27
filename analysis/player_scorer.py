@@ -82,7 +82,7 @@ def load_tuned_weights() -> Optional[Dict[str, float]]:
 
         latest_key = max(history.keys(), key=parse_gw)
         weights = history[latest_key].get("weights")
-        if weights:
+        if weights and config.DEBUG:
             print(f"   [model] Loaded tuned weights from {latest_key} evaluation")
         return weights
     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
@@ -103,6 +103,7 @@ class PlayerScorer:
         self.fixtures = fixture_analyzer
         self.news = news_scraper
         self._injuries: Optional[Dict[str, InjuryStatus]] = None
+        self._score_cache: Dict[int, ScoredPlayer] = {}  # player_id -> cached result
 
         # Try to load tuned weights, fall back to config defaults
         self.tuned_weights = None
@@ -394,6 +395,10 @@ class PlayerScorer:
 
     def score_player(self, player: Player) -> ScoredPlayer:
         """Calculate all scores for a player with position-aware weighting"""
+        # Return cached result if available (same player scored multiple times per run)
+        if player.id in self._score_cache:
+            return self._score_cache[player.id]
+
         form_score = self._calculate_form_score(player)
         xgi_score = self._calculate_xgi_score(player)
         fixture_score = self._calculate_fixture_score(player)
@@ -490,7 +495,7 @@ class PlayerScorer:
             # 75% chance -> 0.75x, 50% chance -> 0.5x, 25% chance -> 0.25x
             overall_score *= availability_mult
 
-        return ScoredPlayer(
+        result = ScoredPlayer(
             player=player,
             overall_score=overall_score,
             form_score=form_score,
@@ -510,6 +515,8 @@ class PlayerScorer:
             recent_points_score=recent_points_score,
             ownership_form_interaction=ownership_form_interaction,
         )
+        self._score_cache[player.id] = result
+        return result
 
     def get_top_players(
         self,

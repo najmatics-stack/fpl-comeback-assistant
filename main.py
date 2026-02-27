@@ -100,6 +100,11 @@ def c_label(text: str) -> str:
     return f"{C.BOLD}{text}{C.RESET}"
 
 
+def print_phase(title: str) -> None:
+    """Print a compact single-line phase header."""
+    print("\n" + c_header(f"--- {title} ---"))
+
+
 def c_value(text: str) -> str:
     """Magenta for important values (prices, scores, ranks)."""
     return f"{C.BMAGENTA}{text}{C.RESET}"
@@ -303,6 +308,12 @@ def parse_args():
         help="View past session logs (recommendations history)",
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Show debug output (hidden by default)",
+    )
+
     return parser.parse_args()
 
 
@@ -345,9 +356,7 @@ def prompt_settings() -> dict:
         "risk": config.AUTO_RISK_LEVEL,
     }
 
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 0: SETTINGS"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 0: SETTINGS")
     print(
         f"\n  max_hits={settings['max_hits']} | "
         f"min_gain_free={settings['min_gain_free']} | "
@@ -405,9 +414,7 @@ def prompt_settings() -> dict:
 
 def prompt_chip(available_chips: List[str]) -> Optional[str]:
     """Phase 0.5: Let user select a chip to play or skip."""
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 0.5: CHIP SELECTION"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 0.5: CHIP SELECTION")
 
     chip_map = {
         "f": ("free_hit", "Free Hit"),
@@ -452,9 +459,7 @@ def prompt_locked_players(
 
     Returns set of locked player IDs.
     """
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 0.75: LOCK PLAYERS"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 0.75: LOCK PLAYERS")
 
     # Group players by position with injury analysis
     positions = {"GKP": [], "DEF": [], "MID": [], "FWD": []}
@@ -866,9 +871,7 @@ def prompt_free_hit_squad(
 
     Returns (chosen_transfers, new_squad_ids) or ([], squad_ids) if skipped.
     """
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 1-FH: FREE HIT SQUAD"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 1-FH: FREE HIT SQUAD")
 
     # Calculate total budget — prefer selling prices (accurate) over market prices
     if budget_info:
@@ -1279,9 +1282,7 @@ def prompt_transfer_plan(
     squad_ids: List[int],
 ) -> List[TransferRecommendation]:
     """Phase 1: Show transfer plans, let user pick/edit/skip."""
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 1: TRANSFER PLAN"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 1: TRANSFER PLAN")
 
     print(recommender.format_transfer_plans(plans))
 
@@ -1487,9 +1488,7 @@ def prompt_captain(
     squad_ids: List[int],
 ) -> tuple:
     """Phase 2: Captain selection. Returns (captain_id, vc_id)."""
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 2: CAPTAIN"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 2: CAPTAIN")
 
     if not captain_picks:
         print("  No captain picks available.")
@@ -1652,9 +1651,7 @@ def prompt_lineup(
 
     Returns (starting_11, bench_4, captain_id, vc_id) or None if skipped.
     """
-    print(c_header("\n" + "=" * 60))
-    print(c_header("  PHASE 3: STARTING LINEUP"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 3: STARTING LINEUP")
 
     # Auto-optimize lineup
     starting, bench = _best_lineup(squad_ids, fpl, scorer, captain_id)
@@ -1824,9 +1821,7 @@ async def prompt_review_and_execute(
     Uses the already-authenticated FPLActions session from the initial login.
     ``lineup`` is (starting_11, bench_4, captain_id, vc_id) or None.
     """
-    print("\n" + c_header("=" * 60))
-    print(c_header("  PHASE 4: REVIEW & EXECUTE"))
-    print(c_header("=" * 60))
+    print_phase("PHASE 4: REVIEW & EXECUTE")
 
     actions = []
     if transfers:
@@ -1971,9 +1966,7 @@ async def interactive_auto_mode(
     current_gw: int,
 ):
     """Interactive auto-pilot mode (Phases 0–4)."""
-    print("\n" + c_header("=" * 60))
-    print(c_header("  AUTO-PILOT MODE (Interactive)"))
-    print(c_header("=" * 60))
+    print_phase("AUTO-PILOT MODE (Interactive)")
 
     # Initialize session log
     session_log = SessionLog(gameweek=current_gw, team_id=team_id)
@@ -1989,9 +1982,7 @@ async def interactive_auto_mode(
     player_names = {p.id: p.web_name for p in fpl.get_all_players()}
 
     # --- Ian Foster ---
-    print("\n" + c_header("=" * 60))
-    print(c_header("  MIRROR REFERENCE: Ian Foster (Most Consistent)"))
-    print(c_header("=" * 60))
+    print_phase("MIRROR REFERENCE: Ian Foster (Most Consistent)")
     try:
         mirror_analysis = await analyze_mirror(
             your_squad=squad_ids,
@@ -2275,6 +2266,7 @@ async def interactive_auto_mode(
 
 async def main_async(args):
     """Main async function"""
+    config.DEBUG = getattr(args, "debug", False)
 
     if args.test_login:
         print("\n🔄 Testing login flow...")
@@ -2297,14 +2289,14 @@ async def main_async(args):
 
     print(c_debug("\n🔄 Fetching FPL data..."))
 
-    # Initialize data fetcher
+    # Initialize data fetcher (shared aiohttp session for connection reuse)
     fpl = FPLDataFetcher()
 
     # Clear cache if requested
     if args.no_cache:
         fpl.cache.clear()
 
-    # Load all data
+    # Load all data (bootstrap + fixtures fetched in parallel)
     await fpl.load_all_data()
 
     current_gw = fpl.get_current_gameweek()
@@ -2325,12 +2317,15 @@ async def main_async(args):
     team_info = None
     if args.team_id:
         print(c_debug(f"🔄 Fetching team {args.team_id}..."))
-        squad_picks = await fetch_team_squad(fpl, args.team_id)
-        team_info = await fetch_team_info(fpl, args.team_id)
+        squad_picks, team_info = await asyncio.gather(
+            fetch_team_squad(fpl, args.team_id),
+            fetch_team_info(fpl, args.team_id),
+        )
         if squad_picks:
             squad_ids = [p["element"] for p in squad_picks]
             print(c_success(f"✓ Found {len(squad_ids)} players in squad"))
-            print(c_debug(f"   [debug] squad IDs (from GW picks): {squad_ids}"))
+            if config.DEBUG:
+                print(c_debug(f"   [debug] squad IDs (from GW picks): {squad_ids}"))
             if team_info:
                 name = f"{team_info.get('player_first_name', '')} {team_info.get('player_last_name', '')}".strip()
                 team_name = team_info.get("name", "Unknown")
@@ -2572,9 +2567,7 @@ async def main_async(args):
         if not squad_picks:
             print("\n❌ No team data available. Please provide --team-id")
         else:
-            print("\n" + "=" * 60)
-            print("  YOUR SQUAD ANALYSIS")
-            print("=" * 60)
+            print_phase("YOUR SQUAD ANALYSIS")
 
             # Team info header
             if team_info:
@@ -2702,9 +2695,7 @@ async def main_async(args):
             print("\n  No session logs found. Run --auto to generate logs.")
             return
 
-        print(c_header("\n" + "=" * 60))
-        print(c_header("  SESSION LOGS"))
-        print(c_header("=" * 60))
+        print_phase("SESSION LOGS")
 
         print(f"\n  Found {len(logs)} session log(s):\n")
         for i, log in enumerate(logs[:10], 1):
@@ -2808,6 +2799,9 @@ async def main_async(args):
         rec = recommender.get_full_recommendations(squad_ids, available_chips)
         print(recommender.format_full_recommendations(rec))
 
+    # Clean up shared aiohttp session
+    await fpl.close()
+
 
 def main():
     """Main entry point"""
@@ -2820,6 +2814,20 @@ def main():
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ Error: {e}")
+
+        # Actionable suggestions based on error type
+        err_str = str(e).lower()
+        if "429" in err_str or "rate" in err_str:
+            print("   Tip: FPL API rate limited. Wait a minute and retry, or use cached data (remove --no-cache).")
+        elif "timeout" in err_str or "timed out" in err_str or isinstance(e, TimeoutError):
+            print("   Tip: Network timeout. Check your connection and retry.")
+        elif "json" in err_str or "decode" in err_str:
+            print("   Tip: Corrupt cached data? Try running with --no-cache to fetch fresh data.")
+        elif "403" in err_str or "forbidden" in err_str:
+            print("   Tip: FPL API blocked the request. Wait a few minutes or check --test-login.")
+        elif "cookie" in err_str or "login" in err_str or "auth" in err_str:
+            print("   Tip: Session expired. Run with --test-login to refresh cookies.")
+
         if "--debug" in sys.argv:
             raise
         sys.exit(1)

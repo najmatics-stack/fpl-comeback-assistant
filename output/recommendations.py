@@ -227,6 +227,24 @@ class RecommendationEngine:
     ) -> List[TransferRecommendation]:
         """Generate transfer recommendations respecting all FPL rules"""
         recommendations: List[TransferRecommendation] = []
+        # O(1) duplicate tracking sets (updated as recommendations are added)
+        recommended_in_ids: Set[int] = set()
+        recommended_out_ids: Set[int] = set()
+
+        # Pre-compute league intel lookups once (not per-iteration)
+        safe_diff_ids: Set[int] = set()
+        safe_diff_map: Dict[int, object] = {}
+        trending_ids: Set[int] = set()
+        trending_map: Dict[int, object] = {}
+        overweight_ids: Set[int] = set()
+        overweight_map: Dict[int, object] = {}
+        if self.league_intel:
+            safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+            safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+            trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
+            trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+            overweight_ids = {e.player_id for e in self.league_intel.league_overweight}
+            overweight_map = {e.player_id: e for e in self.league_intel.league_overweight}
 
         # Score current squad
         current_squad = []
@@ -268,6 +286,10 @@ class RecommendationEngine:
             if len(recommendations) >= limit:
                 break
 
+            # Skip if outgoing player already used (O(1) check)
+            if weak.player.id in recommended_out_ids:
+                continue
+
             position = weak.player.position
             max_price = weak.player.price + remaining_budget
 
@@ -281,15 +303,9 @@ class RecommendationEngine:
                 if top.player.id in current_squad_ids:
                     continue
 
-                # Skip if already recommended as an incoming player
-                if any(r.player_in.player.id == top.player.id for r in recommendations):
+                # Skip if already recommended as an incoming player (O(1) check)
+                if top.player.id in recommended_in_ids:
                     continue
-
-                # Skip if outgoing player already used
-                if any(
-                    r.player_out.player.id == weak.player.id for r in recommendations
-                ):
-                    break
 
                 # Enforce FPL rules
                 if self._would_violate_rules(
@@ -304,7 +320,7 @@ class RecommendationEngine:
 
                 score_gain = top.overall_score - weak.overall_score
 
-                # League spy adjustments
+                # League spy adjustments (using pre-computed lookups)
                 if self.league_intel:
                     in_ownership = self.league_intel.league_ownership.get(
                         top.player.id, 0
@@ -318,32 +334,16 @@ class RecommendationEngine:
                         score_gain *= 0.85  # Penalty for selling must-haves
 
                     # Global vs league: heavily boost safe differentials
-                    # World validates the pick, rivals don't own — maximum exploitation
-                    safe_diff_ids = {
-                        e.player_id for e in self.league_intel.safe_differentials
-                    }
                     if top.player.id in safe_diff_ids:
-                        score_gain *= (
-                            1.50  # Heavy bonus: world-proven league differential
-                        )
+                        score_gain *= 1.50  # World-proven league differential
 
                     # Trending hidden gems get a strong boost too
-                    trending_ids = {
-                        e.player_id for e in self.league_intel.trending_hidden
-                    }
                     if top.player.id in trending_ids:
-                        score_gain *= (
-                            1.35  # World is moving here, league hasn't caught on
-                        )
+                        score_gain *= 1.35  # World is moving here, league hasn't caught on
 
                     # Selling a league-overweight player your rivals cling to = exploitable
-                    overweight_ids = {
-                        e.player_id for e in self.league_intel.league_overweight
-                    }
                     if weak.player.id in overweight_ids:
-                        score_gain *= (
-                            1.25  # Rivals over-index, selling exploits the gap
-                        )
+                        score_gain *= 1.25  # Rivals over-index, selling exploits the gap
 
                 # For hits (-4), require higher threshold
                 transfer_number = len(recommendations) + 1
@@ -379,18 +379,12 @@ class RecommendationEngine:
                     if out_ownership >= 70:
                         reasons.append(f"rival template ({out_ownership:.0f}% own)")
 
-                    # Global vs league reasons
-                    safe_diff_map = {
-                        e.player_id: e for e in self.league_intel.safe_differentials
-                    }
+                    # Global vs league reasons (using pre-computed maps)
                     if top.player.id in safe_diff_map:
                         e = safe_diff_map[top.player.id]
                         reasons.append(
                             f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
                         )
-                    trending_map = {
-                        e.player_id: e for e in self.league_intel.trending_hidden
-                    }
                     if top.player.id in trending_map:
                         e = trending_map[top.player.id]
                         xfers = e.transfers_in_event
@@ -400,9 +394,6 @@ class RecommendationEngine:
                         reasons.append(
                             f"TRENDING: +{xfers_str} transfers, league asleep"
                         )
-                    overweight_map = {
-                        e.player_id: e for e in self.league_intel.league_overweight
-                    }
                     if weak.player.id in overweight_map:
                         e = overweight_map[weak.player.id]
                         reasons.append(
@@ -420,6 +411,8 @@ class RecommendationEngine:
                         reason=reason,
                     )
                 )
+                recommended_in_ids.add(top.player.id)
+                recommended_out_ids.add(weak.player.id)
                 remaining_budget -= price_diff
                 break
 
@@ -496,6 +489,19 @@ class RecommendationEngine:
         captain_picks = []
         use_xgi = getattr(config, "CAPTAIN_USE_XGI", False)
 
+        # Pre-compute league intel lookups once (not per-player)
+        safe_diff_ids: Set[int] = set()
+        safe_diff_map: Dict[int, object] = {}
+        trending_ids: Set[int] = set()
+        trending_map: Dict[int, object] = {}
+        num_rivals = 0
+        if self.league_intel:
+            safe_diff_ids = {e.player_id for e in self.league_intel.safe_differentials}
+            safe_diff_map = {e.player_id: e for e in self.league_intel.safe_differentials}
+            trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
+            trending_map = {e.player_id: e for e in self.league_intel.trending_hidden}
+            num_rivals = len(self.league_intel.rivals)
+
         for player in players:
             sp = self.scorer.score_player(player)
 
@@ -556,37 +562,26 @@ class RecommendationEngine:
             if sp.availability == "doubt":
                 expected_pts *= sp.availability_multiplier
 
-            # League spy adjustments
+            # League spy adjustments (using pre-computed lookups)
             if self.league_intel:
                 if player.id in self.league_intel.captain_fades:
                     expected_pts *= 0.85
                 elif player.id in self.league_intel.captain_targets:
                     expected_pts *= 1.15
 
-                # Global vs league captain boost: if the world backs them
-                # but your league doesn't captain them, that's maximum exploitation
-                safe_diff_ids = {
-                    e.player_id for e in self.league_intel.safe_differentials
-                }
+                # Global vs league captain boost
                 if player.id in safe_diff_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count <= 1:
-                        expected_pts *= (
-                            1.30  # World-backed, league-ignored = massive edge
-                        )
+                        expected_pts *= 1.30  # World-backed, league-ignored
                     else:
-                        expected_pts *= (
-                            1.15  # World-backed even if a few rivals captain
-                        )
+                        expected_pts *= 1.15  # World-backed even if some rivals captain
 
                 # Trending hidden as captain = bold but world-validated move
-                trending_ids = {e.player_id for e in self.league_intel.trending_hidden}
                 if player.id in trending_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count == 0:
-                        expected_pts *= (
-                            1.25  # Nobody in league captaining, world is moving here
-                        )
+                        expected_pts *= 1.25  # Nobody captaining, world moving here
 
             # Generate fixture info
             fixtures_str = " + ".join(
@@ -611,7 +606,6 @@ class RecommendationEngine:
                 reasons.append("DOUBLE GW")
 
             if self.league_intel:
-                num_rivals = len(self.league_intel.rivals)
                 cap_count = self.league_intel.league_captains.get(player.id, 0)
                 if player.id in self.league_intel.captain_fades:
                     reasons.append(f"fade: {cap_count}/{num_rivals} rivals captaining")
@@ -620,17 +614,11 @@ class RecommendationEngine:
                         f"differential captain ({cap_count}/{num_rivals} rivals)"
                     )
 
-                safe_diff_map = {
-                    e.player_id: e for e in self.league_intel.safe_differentials
-                }
                 if player.id in safe_diff_map:
                     e = safe_diff_map[player.id]
                     reasons.append(
                         f"EXPLOIT: world owns {e.global_ownership:.0f}%, league only {e.league_ownership:.0f}%"
                     )
-                trending_map = {
-                    e.player_id: e for e in self.league_intel.trending_hidden
-                }
                 if player.id in trending_map:
                     e = trending_map[player.id]
                     xfers = e.transfers_in_event

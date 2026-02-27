@@ -209,16 +209,30 @@ class LeagueSpy:
             leader_points = results[0]["total"] if results else 0
             points_to_leader = leader_points - your_points
 
-            # Fetch each rival's squad (batched)
-            print(f"   Scanning {len(rivals)} rival squads...")
-            for rival in rivals:
-                picks_data = await self._fetch_picks(session, rival.team_id, current_gw)
-                if picks_data and "picks" in picks_data:
-                    rival.squad_ids = [p["element"] for p in picks_data["picks"]]
-                    for p in picks_data["picks"]:
-                        if p.get("is_captain"):
-                            rival.captain_id = p["element"]
-                await asyncio.sleep(1.0)  # Rate limit
+            # Fetch each rival's squad (batched with semaphore)
+            total = len(rivals)
+            print(f"   Scanning {total} rival squads...", end="", flush=True)
+
+            sem = asyncio.Semaphore(3)
+            done_count = 0
+
+            async def _fetch_rival(rival: Rival) -> None:
+                nonlocal done_count
+                async with sem:
+                    picks_data = await self._fetch_picks(
+                        session, rival.team_id, current_gw
+                    )
+                    if picks_data and "picks" in picks_data:
+                        rival.squad_ids = [p["element"] for p in picks_data["picks"]]
+                        for p in picks_data["picks"]:
+                            if p.get("is_captain"):
+                                rival.captain_id = p["element"]
+                    done_count += 1
+                    print(f"\r   Scanning rival {done_count}/{total}...", end="", flush=True)
+                    await asyncio.sleep(0.5)  # Rate limit between requests
+
+            await asyncio.gather(*[_fetch_rival(r) for r in rivals])
+            print(f"\r   Scanned {total} rival squads    ")
 
         # Analyze ownership within league
         num_rivals = len(rivals)

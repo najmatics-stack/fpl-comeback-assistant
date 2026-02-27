@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 import pandas as pd
 
+import config
 from .cache import Cache
 
 
@@ -115,6 +116,19 @@ class FPLDataFetcher:
         self._fixtures_data: Optional[List] = None
         self._teams: Dict[int, Team] = {}
         self._players: Dict[int, Player] = {}
+        self._session: Optional[aiohttp.ClientSession] = None
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """Get or create a shared aiohttp session (reuses TCP connections)"""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession()
+        return self._session
+
+    async def close(self) -> None:
+        """Close the shared session"""
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
 
     async def fetch_bootstrap(self) -> Dict[str, Any]:
         """Fetch main bootstrap-static data"""
@@ -122,11 +136,11 @@ class FPLDataFetcher:
         if cached:
             return cached
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.BASE_URL}/bootstrap-static/") as resp:
-                data = await resp.json()
-                self.cache.set("bootstrap", data)
-                return data
+        session = await self._get_session()
+        async with session.get(f"{self.BASE_URL}/bootstrap-static/") as resp:
+            data = await resp.json()
+            self.cache.set("bootstrap", data)
+            return data
 
     async def fetch_fixtures(self) -> List[Dict]:
         """Fetch all fixtures"""
@@ -134,11 +148,11 @@ class FPLDataFetcher:
         if cached:
             return cached
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.BASE_URL}/fixtures/") as resp:
-                data = await resp.json()
-                self.cache.set("fixtures", data)
-                return data
+        session = await self._get_session()
+        async with session.get(f"{self.BASE_URL}/fixtures/") as resp:
+            data = await resp.json()
+            self.cache.set("fixtures", data)
+            return data
 
     async def fetch_team_data(self, team_id: int) -> Dict[str, Any]:
         """Fetch a specific manager's team data"""
@@ -147,11 +161,11 @@ class FPLDataFetcher:
         if cached:
             return cached
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{self.BASE_URL}/entry/{team_id}/") as resp:
-                data = await resp.json()
-                self.cache.set(cache_key, data)
-                return data
+        session = await self._get_session()
+        async with session.get(f"{self.BASE_URL}/entry/{team_id}/") as resp:
+            data = await resp.json()
+            self.cache.set(cache_key, data)
+            return data
 
     async def fetch_team_picks(self, team_id: int, gameweek: int) -> Dict[str, Any]:
         """Fetch a manager's picks for a specific gameweek"""
@@ -160,23 +174,23 @@ class FPLDataFetcher:
         if cached:
             return cached
 
-        async with aiohttp.ClientSession() as session:
-            url = f"{self.BASE_URL}/entry/{team_id}/event/{gameweek}/picks/"
-            async with session.get(url) as resp:
-                if resp.status == 404:
-                    return {}
-                data = await resp.json()
-                self.cache.set(cache_key, data)
-                return data
+        session = await self._get_session()
+        url = f"{self.BASE_URL}/entry/{team_id}/event/{gameweek}/picks/"
+        async with session.get(url) as resp:
+            if resp.status == 404:
+                return {}
+            data = await resp.json()
+            self.cache.set(cache_key, data)
+            return data
 
     async def fetch_team_transfers(self, team_id: int) -> List[Dict[str, Any]]:
         """Fetch all transfers made by a manager (public endpoint, no auth needed)"""
-        async with aiohttp.ClientSession() as session:
-            url = f"{self.BASE_URL}/entry/{team_id}/transfers/"
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return []
-                return await resp.json()
+        session = await self._get_session()
+        url = f"{self.BASE_URL}/entry/{team_id}/transfers/"
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return []
+            return await resp.json()
 
     async def fetch_current_squad(self, team_id: int) -> Optional[List[dict]]:
         """Fetch the ACTUAL current squad, accounting for pending transfers.
@@ -186,43 +200,49 @@ class FPLDataFetcher:
         real current squad.
         """
         current_gw = self.get_current_gameweek()
-        print(f"   [debug] fetch_current_squad: current_gw={current_gw}")
+        if config.DEBUG:
+            print(f"   [debug] fetch_current_squad: current_gw={current_gw}")
 
         picks_data = await self.fetch_team_picks(team_id, current_gw)
 
         if not picks_data or "picks" not in picks_data:
-            print(f"   [debug] No picks for GW{current_gw}, trying GW{current_gw - 1}")
+            if config.DEBUG:
+                print(f"   [debug] No picks for GW{current_gw}, trying GW{current_gw - 1}")
             picks_data = await self.fetch_team_picks(team_id, current_gw - 1)
 
         if not picks_data or "picks" not in picks_data:
-            print("   [debug] No picks data found at all")
+            if config.DEBUG:
+                print("   [debug] No picks data found at all")
             return None
 
         picks = list(picks_data["picks"])
         base_ids = [p["element"] for p in picks]
-        print(f"   [debug] Base squad from picks endpoint: {base_ids}")
+        if config.DEBUG:
+            print(f"   [debug] Base squad from picks endpoint: {base_ids}")
 
         # Fetch transfers and apply any made for the next GW
         transfers = await self.fetch_team_transfers(team_id)
-        print(f"   [debug] Total transfers returned by API: {len(transfers)}")
+        if config.DEBUG:
+            print(f"   [debug] Total transfers returned by API: {len(transfers)}")
 
-        # Show the most recent transfers for debugging
-        if transfers:
-            recent = transfers[:6]  # API returns newest first
-            for t in recent:
-                print(
-                    f"   [debug]   transfer: event={t.get('event')} "
-                    f"out={t.get('element_out')} in={t.get('element_in')} "
-                    f"time={t.get('time', '?')}"
-                )
+            # Show the most recent transfers for debugging
+            if transfers:
+                recent = transfers[:6]  # API returns newest first
+                for t in recent:
+                    print(
+                        f"   [debug]   transfer: event={t.get('event')} "
+                        f"out={t.get('element_out')} in={t.get('element_in')} "
+                        f"time={t.get('time', '?')}"
+                    )
 
         # Apply transfers for BOTH current GW and next GW
         # (current GW transfers may not be reflected in picks if GW is in progress)
         next_gw = current_gw + 1
         pending = [t for t in transfers if t.get("event") in (current_gw, next_gw)]
-        print(
-            f"   [debug] Pending transfers for GW{current_gw} or GW{next_gw}: {len(pending)}"
-        )
+        if config.DEBUG:
+            print(
+                f"   [debug] Pending transfers for GW{current_gw} or GW{next_gw}: {len(pending)}"
+            )
 
         if pending:
             for t in pending:
@@ -235,16 +255,20 @@ class FPLDataFetcher:
                         if p["element"] == out_id:
                             picks[i] = dict(p, element=in_id)
                             break
-                    print(f"   [debug]   Applied: {out_id} -> {in_id}")
+                    if config.DEBUG:
+                        print(f"   [debug]   Applied: {out_id} -> {in_id}")
                 else:
-                    print(
-                        f"   [debug]   Skipped (already applied): {out_id} -> {in_id}"
-                    )
+                    if config.DEBUG:
+                        print(
+                            f"   [debug]   Skipped (already applied): {out_id} -> {in_id}"
+                        )
 
-            applied_ids = [p["element"] for p in picks]
-            print(f"   [debug] Adjusted squad: {applied_ids}")
+            if config.DEBUG:
+                applied_ids = [p["element"] for p in picks]
+                print(f"   [debug] Adjusted squad: {applied_ids}")
         else:
-            print("   [debug] No pending transfers found — squad unchanged")
+            if config.DEBUG:
+                print("   [debug] No pending transfers found — squad unchanged")
 
         return picks
 
@@ -255,18 +279,19 @@ class FPLDataFetcher:
         if cached:
             return cached
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{self.BASE_URL}/element-summary/{player_id}/"
-            ) as resp:
-                data = await resp.json()
-                self.cache.set(cache_key, data)
-                return data
+        session = await self._get_session()
+        async with session.get(
+            f"{self.BASE_URL}/element-summary/{player_id}/"
+        ) as resp:
+            data = await resp.json()
+            self.cache.set(cache_key, data)
+            return data
 
     async def load_all_data(self) -> None:
         """Load and process all required data"""
-        self._bootstrap_data = await self.fetch_bootstrap()
-        self._fixtures_data = await self.fetch_fixtures()
+        self._bootstrap_data, self._fixtures_data = await asyncio.gather(
+            self.fetch_bootstrap(), self.fetch_fixtures()
+        )
         self._process_teams()
         self._process_players()
 
