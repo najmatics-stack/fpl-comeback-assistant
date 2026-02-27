@@ -54,6 +54,28 @@ async def main() -> None:
         print("Error: DISCORD_WEBHOOK_URL environment variable not set.")
         sys.exit(1)
 
+    # --now flag: send the real current deadline immediately, ignoring windows
+    if "--now" in sys.argv:
+        print("Fetching FPL bootstrap data...")
+        gw_info = await fetch_next_deadline()
+        if not gw_info:
+            print("No upcoming gameweek found.")
+            return
+        now_epoch = int(datetime.now(timezone.utc).timestamp())
+        seconds_remaining = gw_info["deadline_epoch"] - now_epoch
+        hours_remaining = seconds_remaining / 3600
+        label = f"{hours_remaining:.0f} hours"
+        success = await send_deadline_alert(
+            webhook_url=webhook_url,
+            gw_name=gw_info["name"],
+            gw_number=gw_info["gw"],
+            deadline_epoch=gw_info["deadline_epoch"],
+            seconds_remaining=seconds_remaining,
+            window_label=label,
+        )
+        print("✓ Notification sent." if success else "✗ Notification failed.")
+        return
+
     # --test flag: send a test message and exit
     if "--test" in sys.argv:
         now = int(datetime.now(timezone.utc).timestamp())
