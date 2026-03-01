@@ -1957,6 +1957,110 @@ def display_model_performance():
         pass
 
 
+async def validate_captain_availability(
+    captain_id: int,
+    vc_id: int,
+    squad_ids: List[int],
+    scorer: "PlayerScorer",
+    fpl: "FPLDataFetcher",
+) -> tuple:
+    """
+    Fresh bootstrap check to verify captain is available before submission.
+
+    Returns (final_captain_id, final_vc_id, was_switched).
+    """
+    import aiohttp as _aiohttp
+
+    FPL_BOOTSTRAP = "https://fantasy.premierleague.com/api/bootstrap-static/"
+
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.get(FPL_BOOTSTRAP) as resp:
+                data = await resp.json(content_type=None)
+    except Exception as e:
+        print(c_warn(f"⚠️  Captain validation fetch failed: {e} — keeping current pick"))
+        return captain_id, vc_id, False
+
+    elements = {el["id"]: el for el in data["elements"]}
+
+    def _is_flagged(pid: int) -> bool:
+        el = elements.get(pid)
+        if not el:
+            return True  # unknown player = unsafe
+        status = el.get("status", "a")
+        chance = el.get("chance_of_playing_next_round")
+        if status in ("i", "s", "u"):
+            return True
+        if chance is not None and chance <= 25:
+            return True
+        return False
+
+    def _player_name(pid: int) -> str:
+        el = elements.get(pid)
+        return el.get("web_name", f"ID:{pid}") if el else f"ID:{pid}"
+
+    def _status_text(pid: int) -> str:
+        el = elements.get(pid)
+        if not el:
+            return "unknown"
+        status = el.get("status", "a")
+        chance = el.get("chance_of_playing_next_round")
+        labels = {"i": "Injured", "s": "Suspended", "u": "Unavailable", "d": "Doubtful"}
+        parts = []
+        if status != "a":
+            parts.append(labels.get(status, status))
+        if chance is not None:
+            parts.append(f"{chance}% chance")
+        news = el.get("news", "")
+        if news:
+            parts.append(news)
+        return " — ".join(parts) if parts else "flagged"
+
+    if not _is_flagged(captain_id):
+        return captain_id, vc_id, False
+
+    # Captain is flagged
+    print(c_error(
+        f"\n🔴 CAPTAIN UNAVAILABLE: {_player_name(captain_id)} — {_status_text(captain_id)}"
+    ))
+
+    # Try VC as replacement
+    if not _is_flagged(vc_id):
+        print(c_success(
+            f"   → Switching captain to VC: {_player_name(vc_id)}"
+        ))
+        return vc_id, captain_id, True
+
+    # VC also flagged — find best available squad player
+    print(c_warn(
+        f"   VC also flagged: {_player_name(vc_id)} — {_status_text(vc_id)}"
+    ))
+
+    best_id = None
+    best_score = -1.0
+    for pid in squad_ids:
+        if pid in (captain_id, vc_id):
+            continue
+        if _is_flagged(pid):
+            continue
+        player = fpl.get_player(pid)
+        if player:
+            sp = scorer.score_player(player)
+            if sp.overall_score > best_score:
+                best_score = sp.overall_score
+                best_id = pid
+
+    if best_id:
+        print(c_success(
+            f"   → New captain: {_player_name(best_id)} (score: {best_score:.1f})"
+        ))
+        return best_id, vc_id, True
+
+    # Nothing available — keep original and hope for the best
+    print(c_warn("   No available replacements found — keeping original captain"))
+    return captain_id, vc_id, False
+
+
 async def interactive_auto_mode(
     recommender: RecommendationEngine,
     fpl: FPLDataFetcher,
@@ -2217,6 +2321,19 @@ async def interactive_auto_mode(
             player_names.get(vc_id, f"ID:{vc_id}"),
         )
 
+        # Phase 2.5: Validate captain availability (fresh bootstrap fetch)
+        captain_id, vc_id, captain_was_switched = await validate_captain_availability(
+            captain_id, vc_id, captain_squad_ids, recommender.scorer, fpl,
+        )
+        if captain_was_switched:
+            # Update session log with new captain
+            session_log.set_captain_chosen(
+                captain_id,
+                player_names.get(captain_id, f"ID:{captain_id}"),
+                vc_id,
+                player_names.get(vc_id, f"ID:{vc_id}"),
+            )
+
         # Phase 3: Lineup (starting 11 + bench order)
         lineup_result = prompt_lineup(
             fpl,
@@ -2295,6 +2412,10 @@ async def main_async(args):
     # Clear cache if requested
     if args.no_cache:
         fpl.cache.clear()
+
+    # Auto mode: force-refresh bootstrap for fresh player statuses
+    if args.auto:
+        fpl.cache.invalidate("bootstrap")
 
     # Load all data (bootstrap + fixtures fetched in parallel)
     await fpl.load_all_data()

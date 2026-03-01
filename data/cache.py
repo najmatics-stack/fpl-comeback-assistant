@@ -56,6 +56,12 @@ class Cache:
         with open(cache_path, "w") as f:
             json.dump(cached, f)
 
+    def invalidate(self, key: str) -> None:
+        """Remove a single cache entry by key."""
+        cache_path = self._get_cache_path(key)
+        if cache_path.exists():
+            cache_path.unlink()
+
     def clear(self) -> None:
         """Clear all cached data"""
         for cache_file in self.cache_dir.glob("*.json"):
