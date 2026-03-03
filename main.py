@@ -412,8 +412,15 @@ def prompt_settings() -> dict:
     return settings
 
 
-def prompt_chip(available_chips: List[str]) -> Optional[str]:
-    """Phase 0.5: Let user select a chip to play or skip."""
+def prompt_chip(
+    available_chips: List[str],
+    chip_context: Optional[dict] = None,
+) -> Optional[str]:
+    """Phase 0.5: Let user select a chip to play or skip.
+
+    When chip_context is provided (from ChipOptimizer.get_contextual_chip_strategy()),
+    displays a smart recommendation table before prompting.
+    """
     print_phase("PHASE 0.5: CHIP SELECTION")
 
     chip_map = {
@@ -433,6 +440,10 @@ def prompt_chip(available_chips: List[str]) -> Optional[str]:
         print("\n  No chips available.")
         return None
 
+    # Display contextual chip intel if available
+    if chip_context:
+        _display_chip_intel(chip_context)
+
     prompt_str = ", ".join(options)
     print(c_prompt(f"\n  Play a chip? [Enter=none, {prompt_str}, q=quit]: "), end="")
     choice = checked_input().strip().lower()
@@ -448,6 +459,98 @@ def prompt_chip(available_chips: List[str]) -> Optional[str]:
 
     print("  No chip selected.")
     return None
+
+
+def _display_chip_intel(ctx: dict) -> None:
+    """Render the chip intel table from contextual chip strategy."""
+    current_gw = ctx["current_gw"]
+    remaining = ctx["remaining_gws"]
+    gap = ctx.get("league_gap")
+    health = ctx["squad_health"]
+    dgw_info = ctx["dgw_info"]
+    bgw_info = ctx["bgw_info"]
+    recs = ctx["recommendations"]
+
+    # Header
+    header_parts = [f"GW{current_gw}", f"{remaining} GWs left"]
+    if gap is not None:
+        header_parts.append(f"{gap} pts behind")
+    print(f"\n  {c_header('CHIP INTEL')} ({' · '.join(header_parts)})")
+
+    # Squad health
+    health_str = f"{health['fit']} fit"
+    if health["doubt"]:
+        health_str += f", {c_warn(str(health['doubt']) + ' doubtful')}"
+    if health["injured"]:
+        health_str += f", {c_error(str(health['injured']) + ' injured')}"
+    print(f"  Squad: {health_str}")
+
+    # DGW/BGW summary
+    if dgw_info:
+        dgw_parts = []
+        for gw in sorted(dgw_info.keys())[:3]:
+            teams = dgw_info[gw]
+            dgw_parts.append(f"GW{gw} ({', '.join(teams[:4])})")
+        print(f"  DGW: {'; '.join(dgw_parts)}")
+    if bgw_info:
+        bgw_parts = []
+        for gw in sorted(bgw_info.keys())[:2]:
+            teams = bgw_info[gw]
+            count = len(teams) if teams[0] != "TBC" else "?"
+            bgw_parts.append(f"GW{gw} ({count} teams blank)")
+        print(f"  BGW: {'; '.join(bgw_parts)}")
+
+    if not recs:
+        return
+
+    # Chip labels for display
+    chip_labels = {
+        "wildcard": "WILDCARD",
+        "free_hit": "FREE HIT",
+        "triple_captain": "TRIPLE CAPTAIN",
+        "bench_boost": "BENCH BOOST",
+    }
+
+    # Table header
+    print(f"\n  {'CHIP':<16} {'NOW':>17}  {'BEST GW':>7}  RECOMMENDATION")
+    print(f"  {'─' * 65}")
+
+    for rec in recs:
+        label = chip_labels.get(rec.chip.value, rec.chip.value.upper())
+        sc = rec.this_week_score
+
+        # Build bar: 10 blocks
+        filled = int(round(sc))
+        bar = "█" * filled + "░" * (10 - filled)
+
+        # Color the bar based on score
+        if sc >= 7.0:
+            bar_str = c_success(bar)
+            score_str = c_success(f"{sc:>4.1f}")
+        elif sc >= 4.0:
+            bar_str = c_warn(bar)
+            score_str = c_warn(f"{sc:>4.1f}")
+        else:
+            bar_str = c_debug(bar)
+            score_str = c_debug(f"{sc:>4.1f}")
+
+        gw_str = f"GW{rec.recommended_gw}" if rec.recommended_gw else "Hold"
+
+        # Truncate reason to fit
+        reason = rec.reason[:35]
+
+        print(f"  {label:<16} {bar_str} {score_str}  {gw_str:>7}  {reason}")
+
+    # Highlight strong recommendation
+    best = recs[0]
+    if best.this_week_score >= 7.0:
+        print(
+            c_success(
+                f"\n  >> Strong case for {chip_labels.get(best.chip.value, best.chip.value.upper())} this week!"
+            )
+        )
+        for factor in best.this_week_factors:
+            print(f"     - {factor}")
 
 
 def prompt_locked_players(
@@ -2202,8 +2305,19 @@ async def interactive_auto_mode(
         # Phase 0: Settings
         settings = prompt_settings()
 
-        # Phase 0.5: Chip selection
-        selected_chip = prompt_chip(available_chips)
+        # Phase 0.5: Chip selection (with contextual intel)
+        chip_context = None
+        if available_chips:
+            try:
+                chip_context = recommender.chips.get_contextual_chip_strategy(
+                    available_chips=available_chips,
+                    squad_ids=squad_ids,
+                    scorer=recommender.scorer,
+                    league_intel=recommender.league_intel,
+                )
+            except Exception as e:
+                print(c_warn(f"  Chip intel unavailable: {e}"))
+        selected_chip = prompt_chip(available_chips, chip_context)
 
         # Phase 0.75: Lock non-negotiable players
         locked_ids = prompt_locked_players(fpl, recommender.scorer, squad_ids)

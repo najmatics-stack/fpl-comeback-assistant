@@ -2,14 +2,20 @@
 Chip strategy optimizer - recommends when to use FPL chips
 """
 
-from dataclasses import dataclass
+from __future__ import annotations
+
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 from data.fpl_api import FPLDataFetcher
 from analysis.fixture_analyzer import FixtureAnalyzer
 
 import config
+
+if TYPE_CHECKING:
+    from analysis.player_scorer import PlayerScorer, ScoredPlayer
+    from analysis.league_spy import LeagueIntel
 
 
 class Chip(Enum):
@@ -30,6 +36,19 @@ class ChipRecommendation:
     reason: str
     priority: int  # 1 = use now, 2 = plan for soon, 3 = hold
     details: str
+
+
+@dataclass
+class ContextualChipRec:
+    """A chip recommendation with this-week scoring context"""
+
+    chip: Chip
+    recommended_gw: Optional[int]
+    reason: str
+    priority: int  # 1=USE NOW, 2=PLAN FOR, 3=HOLD
+    details: str
+    this_week_score: float  # 0.0–10.0: how good is THIS GW for this chip
+    this_week_factors: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -416,3 +435,320 @@ class ChipOptimizer:
             f"   {rec.reason}\n"
             f"   {rec.details}"
         )
+
+    # ------------------------------------------------------------------
+    # Contextual this-week scoring (for interactive auto mode)
+    # ------------------------------------------------------------------
+
+    def _score_wc_this_week(
+        self,
+        squad_health: Dict[str, int],
+        scored_players: List[ScoredPlayer],
+        dgw_info: Dict[int, List[str]],
+        current_gw: int,
+        remaining_gws: int,
+        league_gap: Optional[int],
+    ) -> Tuple[float, List[str]]:
+        """Score how good THIS week is for Wildcard (0-10)."""
+        score = 0.0
+        factors: List[str] = []
+
+        # Injury pressure (0-4): injured * 1.5 + doubt * 0.5, capped at 4
+        injury_pts = min(
+            squad_health["injured"] * 1.5 + squad_health["doubt"] * 0.5, 4.0
+        )
+        if injury_pts > 0:
+            score += injury_pts
+            factors.append(
+                f"{squad_health['injured']} injured + {squad_health['doubt']} doubtful"
+            )
+
+        # DGW prep (0-3): 3 if DGW 1-2 weeks away, 1.5 if 3-4 weeks
+        upcoming_dgws = sorted(gw for gw in dgw_info if gw > current_gw)
+        if upcoming_dgws:
+            gap = upcoming_dgws[0] - current_gw
+            if gap <= 2:
+                score += 3.0
+                factors.append(f"DGW{upcoming_dgws[0]} in {gap} week(s) — rebuild now")
+            elif gap <= 4:
+                score += 1.5
+                factors.append(f"DGW{upcoming_dgws[0]} in {gap} weeks — prep soon")
+
+        # Squad weakness (0-2): average score below threshold
+        if scored_players:
+            avg_score = sum(sp.overall_score for sp in scored_players) / len(
+                scored_players
+            )
+            if avg_score < 5.0:
+                weakness_pts = min((5.0 - avg_score) * 1.0, 2.0)
+                score += weakness_pts
+                factors.append(f"Squad avg score {avg_score:.1f} (below par)")
+
+        # Urgency (0-1): <8 GWs left or large points gap
+        if remaining_gws < 8:
+            score += 0.5
+            factors.append(f"Only {remaining_gws} GWs left")
+        if league_gap and league_gap > 150:
+            score += 0.5
+            factors.append(f"{league_gap} pts behind — need overhaul")
+
+        return min(score, 10.0), factors
+
+    def _score_fh_this_week(
+        self,
+        squad_ids: List[int],
+        scored_players: List[ScoredPlayer],
+        current_gw: int,
+        dgw_raw: Dict[int, List[int]],
+        bgw_raw: Dict[int, List[int]],
+    ) -> Tuple[float, List[str]]:
+        """Score how good THIS week is for Free Hit (0-10)."""
+        score = 0.0
+        factors: List[str] = []
+
+        # Blank exposure (0-5): squad players whose team blanks THIS GW
+        blanking_teams = set(bgw_raw.get(current_gw, []))
+        if blanking_teams:
+            squad_blanks = sum(
+                1
+                for sp in scored_players
+                if sp.player.team_id in blanking_teams
+            )
+            blank_pts = min(squad_blanks / 15.0 * 10.0, 5.0)
+            if blank_pts > 0:
+                score += blank_pts
+                factors.append(
+                    f"{squad_blanks}/15 squad players blank this GW"
+                )
+
+        # DGW opportunity (0-3): if THIS GW is a DGW, how many slots squad is missing
+        dgw_teams_this_gw = set(dgw_raw.get(current_gw, []))
+        if dgw_teams_this_gw:
+            squad_dgw = sum(
+                1
+                for sp in scored_players
+                if sp.player.team_id in dgw_teams_this_gw
+            )
+            missing = max(0, 11 - squad_dgw)  # ideally 11 DGW starters
+            dgw_pts = min(missing / 11.0 * 3.0, 3.0)
+            if dgw_pts > 0:
+                score += dgw_pts
+                factors.append(
+                    f"DGW this week — only {squad_dgw}/15 players double"
+                )
+
+        # Squad pain (0-2): injured/doubtful boost (FH swaps whole squad)
+        unfit = sum(
+            1 for sp in scored_players if sp.availability in ("injured", "doubt")
+        )
+        if unfit >= 2:
+            score += min(unfit * 0.5, 2.0)
+            factors.append(f"{unfit} players unfit — FH swaps entire squad")
+
+        return min(score, 10.0), factors
+
+    def _score_tc_this_week(
+        self,
+        squad_ids: List[int],
+        scored_players: List[ScoredPlayer],
+        current_gw: int,
+        dgw_raw: Dict[int, List[int]],
+    ) -> Tuple[float, List[str]]:
+        """Score how good THIS week is for Triple Captain (0-10)."""
+        score = 0.0
+        factors: List[str] = []
+
+        if not scored_players:
+            return 0.0, ["No squad data"]
+
+        # Best captain available (0-4): highest ep_next in squad
+        best = max(scored_players, key=lambda sp: sp.player.ep_next)
+        ep = best.player.ep_next
+        if ep >= 8:
+            score += 4.0
+        elif ep >= 6:
+            score += 3.0
+        elif ep >= 4:
+            score += 2.0
+        else:
+            score += 1.0
+        factors.append(f"Best captain: {best.player.web_name} ({ep:.1f} xPts)")
+
+        # DGW bonus (0-4): if best captain's team has DGW THIS week
+        dgw_teams_this_gw = set(dgw_raw.get(current_gw, []))
+        if best.player.team_id in dgw_teams_this_gw:
+            score += 4.0
+            factors.append(f"{best.player.web_name} has DGW — 3x two games!")
+        elif dgw_teams_this_gw:
+            # DGW exists but best captain doesn't have it
+            dgw_names = [
+                sp.player.web_name
+                for sp in scored_players
+                if sp.player.team_id in dgw_teams_this_gw
+            ][:3]
+            if dgw_names:
+                factors.append(
+                    f"DGW players in squad: {', '.join(dgw_names)} (not top pick)"
+                )
+
+        # Fixture ease (0-2): best captain fixture quality
+        if best.fixture_score >= 8.0:
+            score += 2.0
+            factors.append("Easy fixture")
+        elif best.fixture_score >= 6.0:
+            score += 1.0
+            factors.append("Decent fixture")
+
+        return min(score, 10.0), factors
+
+    def _score_bb_this_week(
+        self,
+        squad_ids: List[int],
+        scored_players: List[ScoredPlayer],
+        current_gw: int,
+        dgw_raw: Dict[int, List[int]],
+    ) -> Tuple[float, List[str]]:
+        """Score how good THIS week is for Bench Boost (0-10)."""
+        score = 0.0
+        factors: List[str] = []
+
+        if len(scored_players) < 15:
+            return 0.0, ["Incomplete squad data"]
+
+        dgw_teams_this_gw = set(dgw_raw.get(current_gw, []))
+
+        # DGW coverage (0-4): how many of 15 squad players have DGW this week
+        dgw_count = sum(
+            1 for sp in scored_players if sp.player.team_id in dgw_teams_this_gw
+        )
+        if dgw_teams_this_gw:
+            dgw_pts = dgw_count / 15.0 * 4.0
+            score += dgw_pts
+            factors.append(f"{dgw_count}/15 players have DGW this week")
+
+        # Bench fitness (0-3): bench players (lowest 4 scorers) that are fit
+        sorted_by_score = sorted(scored_players, key=lambda sp: sp.overall_score)
+        bench = sorted_by_score[:4]
+        bench_fit = sum(1 for sp in bench if sp.availability == "fit")
+        bench_fit_pts = bench_fit / 4.0 * 3.0
+        score += bench_fit_pts
+        if bench_fit < 4:
+            factors.append(f"Only {bench_fit}/4 bench players fit")
+        else:
+            factors.append("Full bench fitness")
+
+        # Bench quality (0-3): average score of bottom 4
+        bench_avg = sum(sp.overall_score for sp in bench) / 4.0
+        quality_pts = min(bench_avg / 7.0 * 3.0, 3.0)
+        score += quality_pts
+        factors.append(f"Bench avg score: {bench_avg:.1f}")
+
+        return min(score, 10.0), factors
+
+    def get_contextual_chip_strategy(
+        self,
+        available_chips: List[str],
+        squad_ids: List[int],
+        scorer: PlayerScorer,
+        league_intel: Optional[LeagueIntel] = None,
+    ) -> dict:
+        """Generate squad-aware chip recommendations with this-week scores.
+
+        Returns dict with:
+          - recommendations: List[ContextualChipRec] sorted by this_week_score desc
+          - squad_health: {fit, doubt, injured}
+          - league_gap: Optional[int]
+          - remaining_gws: int
+          - current_gw: int
+          - dgw_info / bgw_info: from _get_upcoming_dgw_bgw()
+        """
+        current_gw = self.fpl.get_current_gameweek()
+        remaining_gws = 38 - current_gw
+
+        # DGW/BGW data (named, for display)
+        dgw_info, bgw_info = self._get_upcoming_dgw_bgw()
+
+        # Raw DGW/BGW (team_id lists, for scoring)
+        dgw_raw = self.fixtures.get_double_gameweeks()
+        bgw_raw = self.fixtures.get_blank_gameweeks()
+
+        # Score each squad player
+        scored_players: List[ScoredPlayer] = []
+        squad_health = {"fit": 0, "doubt": 0, "injured": 0}
+        for pid in squad_ids:
+            player = self.fpl.get_player(pid)
+            if player:
+                sp = scorer.score_player(player)
+                scored_players.append(sp)
+                if sp.availability == "fit":
+                    squad_health["fit"] += 1
+                elif sp.availability == "doubt":
+                    squad_health["doubt"] += 1
+                else:  # injured / suspended
+                    squad_health["injured"] += 1
+
+        # League gap
+        league_gap = league_intel.points_to_leader if league_intel else None
+
+        available_set = set(c.lower() for c in available_chips)
+
+        # Build one ContextualChipRec per chip
+        chip_configs = [
+            (Chip.WILDCARD, "wildcard"),
+            (Chip.FREE_HIT, "free_hit"),
+            (Chip.TRIPLE_CAPTAIN, "triple_captain"),
+            (Chip.BENCH_BOOST, "bench_boost"),
+        ]
+
+        recs: List[ContextualChipRec] = []
+        for chip_enum, chip_key in chip_configs:
+            if chip_key not in available_set:
+                continue
+
+            # Get base recommendation from existing methods
+            if chip_enum == Chip.WILDCARD:
+                base = self._recommend_wildcard(True, current_gw, dgw_info, bgw_info)
+                tw_score, tw_factors = self._score_wc_this_week(
+                    squad_health, scored_players, dgw_info,
+                    current_gw, remaining_gws, league_gap,
+                )
+            elif chip_enum == Chip.FREE_HIT:
+                base = self._recommend_free_hit(True, current_gw, dgw_info, bgw_info)
+                tw_score, tw_factors = self._score_fh_this_week(
+                    squad_ids, scored_players, current_gw, dgw_raw, bgw_raw,
+                )
+            elif chip_enum == Chip.TRIPLE_CAPTAIN:
+                base = self._recommend_triple_captain(True, current_gw, dgw_info)
+                tw_score, tw_factors = self._score_tc_this_week(
+                    squad_ids, scored_players, current_gw, dgw_raw,
+                )
+            else:  # BENCH_BOOST
+                base = self._recommend_bench_boost(True, current_gw, dgw_info)
+                tw_score, tw_factors = self._score_bb_this_week(
+                    squad_ids, scored_players, current_gw, dgw_raw,
+                )
+
+            recs.append(
+                ContextualChipRec(
+                    chip=chip_enum,
+                    recommended_gw=base.recommended_gw,
+                    reason=base.reason,
+                    priority=base.priority,
+                    details=base.details,
+                    this_week_score=round(tw_score, 1),
+                    this_week_factors=tw_factors,
+                )
+            )
+
+        # Sort by this_week_score descending
+        recs.sort(key=lambda r: r.this_week_score, reverse=True)
+
+        return {
+            "recommendations": recs,
+            "squad_health": squad_health,
+            "league_gap": league_gap,
+            "remaining_gws": remaining_gws,
+            "current_gw": current_gw,
+            "dgw_info": dgw_info,
+            "bgw_info": bgw_info,
+        }

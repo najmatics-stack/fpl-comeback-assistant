@@ -1,5 +1,5 @@
 """Data fetching modules"""
 
-from .fpl_api import FPLDataFetcher as FPLDataFetcher
-from .news_scraper import NewsScraper as NewsScraper
-from .cache import Cache as Cache
+# Lazy imports — consumers use explicit submodule imports (e.g. from data.fpl_api import ...).
+# Eager re-exports here would pull in heavy deps (pandas) and break lightweight
+# scripts like check_deadline.py that only need data.discord_notifier + aiohttp.
