@@ -101,10 +101,26 @@ async def check_squad_availability(
                                 squad_element_ids.add(t["element_in"])
         except Exception:
             pass
-        # Rebuild picks list with updated squad (drop stale captain/VC flags —
-        # they're from last GW and meaningless before the new deadline)
+        # Infer likely captain/VC from highest ep_next in the squad.
+        # The actual GW-1 captain flags are stale and meaningless before
+        # the new deadline, so we use expected points as a proxy.
+        likely_captain = max(
+            squad_element_ids,
+            key=lambda eid: float(elements.get(eid, {}).get("ep_next", 0) or 0),
+        )
+        # VC = second-highest ep_next
+        remaining = squad_element_ids - {likely_captain}
+        likely_vc = max(
+            remaining,
+            key=lambda eid: float(elements.get(eid, {}).get("ep_next", 0) or 0),
+        ) if remaining else None
+
         picks_data["picks"] = [
-            {"element": eid, "is_captain": False, "is_vice_captain": False}
+            {
+                "element": eid,
+                "is_captain": eid == likely_captain,
+                "is_vice_captain": eid == likely_vc,
+            }
             for eid in squad_element_ids
         ]
 
