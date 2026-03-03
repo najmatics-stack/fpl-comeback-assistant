@@ -70,20 +70,43 @@ async def check_squad_availability(
     # Build element lookup
     elements = {el["id"]: el for el in bootstrap_data["elements"]}
 
-    # Fetch squad picks — try current GW, fallback to previous
+    # Fetch squad picks — try previous GW (last confirmed lineup).
+    # current_gw picks don't exist until after the deadline, so always
+    # use current_gw - 1 as the base squad.  Any pending transfers for
+    # current_gw are applied below via the transfers endpoint.
     picks_data = None
-    for gw in [current_gw, current_gw - 1]:
-        if gw < 1:
-            continue
-        url = FPL_PICKS_URL.format(team_id=team_id, gw=gw)
+    base_gw = current_gw - 1
+    if base_gw >= 1:
+        url = FPL_PICKS_URL.format(team_id=team_id, gw=base_gw)
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
                     if resp.status == 200:
                         picks_data = await resp.json(content_type=None)
-                        break
         except Exception:
-            continue
+            pass
+
+    # Apply any pending transfers for current_gw so the squad is up to date
+    if picks_data:
+        squad_element_ids = {p["element"] for p in picks_data["picks"]}
+        try:
+            transfers_url = f"https://fantasy.premierleague.com/api/entry/{team_id}/transfers/"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(transfers_url) as resp:
+                    if resp.status == 200:
+                        transfers = await resp.json(content_type=None)
+                        for t in transfers:
+                            if t.get("event") == current_gw:
+                                squad_element_ids.discard(t["element_out"])
+                                squad_element_ids.add(t["element_in"])
+        except Exception:
+            pass
+        # Rebuild picks list with updated squad (drop stale captain/VC flags —
+        # they're from last GW and meaningless before the new deadline)
+        picks_data["picks"] = [
+            {"element": eid, "is_captain": False, "is_vice_captain": False}
+            for eid in squad_element_ids
+        ]
 
     if not picks_data:
         print(f"[squad_check] Could not fetch picks for team {team_id}")
