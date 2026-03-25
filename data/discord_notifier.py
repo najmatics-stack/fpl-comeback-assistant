@@ -92,12 +92,15 @@ async def send_squad_alert(
     gw_name: str,
     flagged_players: list[dict],
     captain_affected: bool,
+    squad_is_live: bool = True,
 ) -> bool:
     """
     Send a Discord embed alerting about unavailable squad players.
 
     flagged_players: list of dicts with keys:
         name, status, chance, news, is_captain, is_vice_captain, position
+    squad_is_live: True if data came from authenticated /my-team/ endpoint,
+        False if using public GW-1 fallback (may not reflect pending transfers).
 
     Returns True on success, False on failure.
     """
@@ -113,8 +116,9 @@ async def send_squad_alert(
         if p.get("is_captain"):
             status_text = STATUS_LABELS.get(p["status"], p["status"])
             chance_str = f"{p['chance']}%" if p["chance"] is not None else "unknown"
+            captain_label = "CAPTAIN" if squad_is_live else "LIKELY CAPTAIN"
             fields.append({
-                "name": f"\U0001f534 CAPTAIN {p['name']} — {status_text} ({chance_str} chance)",
+                "name": f"\U0001f534 {captain_label} {p['name']} — {status_text} ({chance_str} chance)",
                 "value": p.get("news") or "No further details",
                 "inline": False,
             })
@@ -127,7 +131,7 @@ async def send_squad_alert(
         chance_str = f"{p['chance']}%" if p["chance"] is not None else "unknown"
         role = ""
         if p.get("is_vice_captain"):
-            role = " (VC)"
+            role = " (VC)" if squad_is_live else " (likely VC)"
         fields.append({
             "name": f"{p['position']} — {p['name']}{role}",
             "value": f"{status_text} ({chance_str} chance) — {p.get('news') or 'No details'}",
@@ -140,12 +144,16 @@ async def send_squad_alert(
         else f"\u26a0\ufe0f {gw_name}: Squad availability issues"
     )
 
+    description = f"**{len(flagged_players)}** player(s) flagged in your squad."
+    if not squad_is_live:
+        description += "\n_Based on last confirmed lineup — may not reflect pending transfers._"
+
     payload = {
         "content": "@everyone",
         "embeds": [
             {
                 "title": title,
-                "description": f"**{len(flagged_players)}** player(s) flagged in your squad.",
+                "description": description,
                 "color": color,
                 "fields": fields[:10],  # Discord max 25, keep reasonable
                 "footer": {"text": "FC ZBEEB | FPL Comeback Assistant"},

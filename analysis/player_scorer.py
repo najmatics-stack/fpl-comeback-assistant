@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Tuple
 
 from data.fpl_api import FPLDataFetcher, Player
 from data.news_scraper import NewsScraper, InjuryStatus
+from data.understat_scraper import UnderstatPlayerStats
 from analysis.fixture_analyzer import FixtureAnalyzer
 
 import config
@@ -60,6 +61,8 @@ class ScoredPlayer:
     ownership_score: float = 0.0  # Global ownership wisdom-of-crowds signal
     recent_points_score: float = 0.0  # Last GW actual points (hot hand)
     ownership_form_interaction: float = 0.0  # Popular + in-form = delivers
+    understat_xg_score: float = 0.0  # Understat xG per 90 score
+    understat_xa_score: float = 0.0  # Understat xA per 90 score
 
 
 def load_tuned_weights() -> Optional[Dict[str, float]]:
@@ -98,10 +101,12 @@ class PlayerScorer:
         fixture_analyzer: FixtureAnalyzer,
         news_scraper: Optional[NewsScraper] = None,
         use_tuned_weights: bool = True,
+        understat_data: Optional[Dict[int, UnderstatPlayerStats]] = None,
     ):
         self.fpl = fpl_data
         self.fixtures = fixture_analyzer
         self.news = news_scraper
+        self.understat_data = understat_data or {}
         self._injuries: Optional[Dict[str, InjuryStatus]] = None
         self._score_cache: Dict[int, ScoredPlayer] = {}  # player_id -> cached result
 
@@ -393,6 +398,34 @@ class PlayerScorer:
         # Available with no flag
         return 1.0
 
+    def _calculate_understat_xg_score(self, player: Player) -> float:
+        """Calculate Understat xG per 90 score (0-10).
+        Uses Understat's more granular xG model as a secondary signal."""
+        stats = self.understat_data.get(player.id)
+        if not stats or stats.minutes < 90:
+            return 0.0
+
+        # Position-aware scaling: FWDs have higher xG/90 than DEFs
+        # Top strikers: ~0.6 xG/90, top mids: ~0.3, top defs: ~0.1
+        multiplier = {"FWD": 14.0, "MID": 20.0, "DEF": 50.0, "GKP": 100.0}.get(
+            player.position, 15.0
+        )
+        return min(10, stats.xG_per_90 * multiplier)
+
+    def _calculate_understat_xa_score(self, player: Player) -> float:
+        """Calculate Understat xA per 90 score (0-10).
+        Uses Understat's more granular xA model as a secondary signal."""
+        stats = self.understat_data.get(player.id)
+        if not stats or stats.minutes < 90:
+            return 0.0
+
+        # Position-aware scaling: creative mids have higher xA/90
+        # Top creators: ~0.4 xA/90, average: ~0.15
+        multiplier = {"FWD": 20.0, "MID": 18.0, "DEF": 30.0, "GKP": 100.0}.get(
+            player.position, 20.0
+        )
+        return min(10, stats.xA_per_90 * multiplier)
+
     def score_player(self, player: Player) -> ScoredPlayer:
         """Calculate all scores for a player with position-aware weighting"""
         # Return cached result if available (same player scored multiple times per run)
@@ -414,6 +447,8 @@ class PlayerScorer:
         ownership_score = self._calculate_ownership_score(player)
         recent_points_score = self._calculate_recent_points_score(player)
         ownership_form_interaction = self._calculate_ownership_form_interaction(player)
+        understat_xg_score = self._calculate_understat_xg_score(player)
+        understat_xa_score = self._calculate_understat_xa_score(player)
 
         # Weight priority: 1) tuned weights from evaluator, 2) position-specific, 3) legacy
         pos_weights = getattr(config, "POSITION_WEIGHTS", {}).get(player.position)
@@ -430,6 +465,8 @@ class PlayerScorer:
             "minutes_security": minutes_score,
             "ownership": ownership_score,  # Wisdom of crowds signal
             "recent_points": recent_points_score,  # Hot hand indicator
+            "understat_xg": understat_xg_score,  # Understat xG/90
+            "understat_xa": understat_xa_score,  # Understat xA/90
         }
 
         # Select weights: tuned > position-specific > legacy
@@ -514,9 +551,44 @@ class PlayerScorer:
             ownership_score=ownership_score,
             recent_points_score=recent_points_score,
             ownership_form_interaction=ownership_form_interaction,
+            understat_xg_score=understat_xg_score,
+            understat_xa_score=understat_xa_score,
         )
         self._score_cache[player.id] = result
         return result
+
+    def score_for_lineup(self, player: Player) -> float:
+        """Score a player for lineup selection (start vs bench).
+
+        Uses GW-specific signals (ep_next, form, fixture, minutes) instead of
+        the transfer-oriented overall_score which is ownership-weighted.
+        """
+        sp = self.score_player(player)
+
+        # Unavailable players should never start
+        if sp.availability in ("injured", "suspended"):
+            return 0.0
+
+        factors = {
+            "ep_next": sp.ep_next_score,
+            "form": sp.form_score,
+            "fixture_ease": sp.fixture_score,
+            "minutes_security": sp.minutes_score,
+            "recent_points": sp.recent_points_score,
+        }
+
+        lineup_weights = getattr(config, "LINEUP_WEIGHTS", {
+            "ep_next": 0.35, "form": 0.20, "fixture_ease": 0.20,
+            "minutes_security": 0.15, "recent_points": 0.10,
+        })
+
+        score = sum(factors.get(k, 0) * w for k, w in lineup_weights.items())
+
+        # Apply availability multiplier for doubtful players
+        if sp.availability == "doubt":
+            score *= sp.availability_multiplier
+
+        return score
 
     def get_top_players(
         self,
