@@ -32,6 +32,8 @@ POSITION_WEIGHTS = {
         "minutes_security": 0.00,
         "ownership": 1.00,  # PURE OWNERSHIP - 20 GW backtest winner
         "recent_points": 0.00,
+        "understat_xg": 0.00,  # Understat xG/90 (disabled until tuned)
+        "understat_xa": 0.00,  # Understat xA/90 (disabled until tuned)
     },
     "DEF": {
         "ep_next": 0.00,
@@ -43,6 +45,8 @@ POSITION_WEIGHTS = {
         "minutes_security": 0.00,
         "ownership": 1.00,  # PURE OWNERSHIP - 20 GW backtest winner
         "recent_points": 0.00,
+        "understat_xg": 0.00,
+        "understat_xa": 0.00,
     },
     "MID": {
         "ep_next": 0.00,
@@ -54,6 +58,8 @@ POSITION_WEIGHTS = {
         "minutes_security": 0.00,
         "ownership": 1.00,  # PURE OWNERSHIP - 20 GW backtest winner
         "recent_points": 0.00,
+        "understat_xg": 0.00,
+        "understat_xa": 0.00,
     },
     "FWD": {
         "ep_next": 0.00,
@@ -65,6 +71,8 @@ POSITION_WEIGHTS = {
         "minutes_security": 0.00,
         "ownership": 1.00,  # PURE OWNERSHIP - 20 GW backtest winner
         "recent_points": 0.00,
+        "understat_xg": 0.00,
+        "understat_xa": 0.00,
     },
 }
 
@@ -88,6 +96,18 @@ OWNERSHIP_FORM_INTERACTION_WEIGHT = 0.00  # Ownership × form (popular + hot = d
 # BACKTEST PROVEN: Pure ownership beats all fancy bonus systems
 PURE_OWNERSHIP_MODE = True
 
+# Lineup selection weights — used ONLY for starting XI vs bench decisions
+# Different from transfer weights: optimizes for single-GW expected points,
+# not long-term squad value. ep_next is FPL's own prediction and the
+# strongest single-GW signal.
+LINEUP_WEIGHTS = {
+    "ep_next": 0.308,
+    "form": 0.038,
+    "fixture_ease": 0.308,
+    "minutes_security": 0.038,
+    "recent_points": 0.308,
+}
+
 # Differential thresholds
 DIFFERENTIAL_MAX_OWNERSHIP = 10.0  # Players owned by less than 10%
 DIFFERENTIAL_MIN_FORM = 4.0  # Minimum form score
@@ -105,13 +125,30 @@ INJURIES_URL = "https://www.fantasyfootballscout.co.uk/fantasy-football-injuries
 TEAM_NEWS_URL = "https://www.fantasyfootballscout.co.uk/team-news/"
 
 # Expected blank and double gameweeks (update as season progresses)
-EXPECTED_BGW = [31, 34]  # Blank gameweeks
-EXPECTED_DGW = [33, 36]  # Double gameweeks
+# These are ONLY used as fallback when API fixtures are incomplete.
+# Once fixtures are confirmed (10 per GW), these are ignored.
+EXPECTED_BGW = [31]  # Blank gameweeks — GW31 confirmed
+EXPECTED_DGW = []  # No confirmed DGWs yet; MCI vs CRY (1 unscheduled) TBD
 
 # Display settings
 TOP_TRANSFERS = 5  # Number of transfer suggestions to show
 TOP_CAPTAINS = 3  # Number of captain options to show
 TOP_DIFFERENTIALS = 5  # Number of differentials per position
+
+# Chip planning
+CHIP_PLAN_ENABLED = True
+
+# Understat xG/xA integration
+UNDERSTAT_ENABLED = True
+
+# Bench strength: controls how much lineup optimization hedges for auto-subs
+# Uses positional auto-sub probabilities (first sub more likely to play than third)
+# 0.0 = pure starting XI optimization, 1.0 = full auto-sub probability weighting
+BENCH_STRENGTH = 0.15
+
+# Auto-sub probabilities by bench position (outfield only, GKP bench is separate)
+# Position 1 (first sub) is most likely to come on
+BENCH_SUB_PROBABILITIES = [0.25, 0.10, 0.05]
 
 # Debug mode (set via --debug flag)
 DEBUG = False
@@ -122,3 +159,33 @@ AUTO_MIN_SCORE_GAIN_FREE = 0.5  # Min score gain for free transfers
 AUTO_MIN_SCORE_GAIN_HIT = 1.5  # Min score gain for hit transfers
 AUTO_MAX_TRANSFERS = 2  # Max total transfers per week
 AUTO_RISK_LEVEL = "balanced"  # conservative, balanced, aggressive
+
+# Differential captaincy mode: auto adjusts based on league gap
+# "auto" = aggressive if >100 pts behind, balanced if 50-100, safe if <50 or leading
+# "aggressive" = always chase, "safe" = always protect, "off" = no league adjustments
+CAPTAIN_DIFFERENTIAL_MODE = "auto"
+
+# Mode-specific multipliers for captain adjustments
+CAPTAIN_MODE_MULTIPLIERS = {
+    "aggressive": {
+        "fade": 0.65,           # Heavy fade on rival captains
+        "target": 1.20,         # Boost league differentials
+        "safe_diff": 1.45,      # Big boost for world-backed, league-ignored
+        "trending": 1.35,       # Trending differentials
+        "ceiling": 1.20,        # Bonus for explosive players (high dreamteam_count)
+    },
+    "balanced": {
+        "fade": 0.85,
+        "target": 1.15,
+        "safe_diff": 1.30,
+        "trending": 1.25,
+        "ceiling": 1.0,
+    },
+    "safe": {
+        "fade": 0.95,           # Barely fade — match the field
+        "target": 1.05,
+        "safe_diff": 1.10,
+        "trending": 1.05,
+        "ceiling": 1.0,
+    },
+}

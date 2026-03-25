@@ -14,6 +14,7 @@ import config
 from data.fpl_api import FPLDataFetcher
 from data.fpl_actions import FPLActions
 from data.news_scraper import NewsScraper
+from data.understat_scraper import UnderstatScraper
 from analysis.fixture_analyzer import FixtureAnalyzer
 from analysis.player_scorer import PlayerScorer
 from analysis.differential import DifferentialFinder
@@ -346,6 +347,55 @@ def get_available_chips(chips_arg: List[str]) -> List[str]:
         return chips_arg
 
 
+# Map FPL API chip names to our internal names
+_API_CHIP_MAP = {
+    "wildcard": "wildcard",
+    "freehit": "free_hit",
+    "3xc": "triple_captain",
+    "bboost": "bench_boost",
+}
+
+ALL_CHIPS = {"wildcard", "free_hit", "triple_captain", "bench_boost"}
+
+# Chips renew at the season midpoint (GW20 = January, second half begins).
+# Only chips used in the CURRENT half count as unavailable.
+CHIP_RENEWAL_GW = 20
+
+
+async def get_available_chips_from_api(
+    fpl: FPLDataFetcher, team_id: int
+) -> tuple[list[str], list[dict]]:
+    """Auto-detect available chips by subtracting used ones from the full set.
+
+    FPL chips renew at the midpoint of the season. Only chips used in the
+    current half (determined by CHIP_RENEWAL_GW) count as unavailable.
+
+    Returns (available_chips, used_chips_raw) so callers can display what was used.
+    """
+    used_raw = await fpl.fetch_chip_history(team_id)
+    current_gw = fpl.get_current_gameweek()
+
+    # Determine which half we're in
+    in_second_half = current_gw >= CHIP_RENEWAL_GW
+
+    available = set(ALL_CHIPS)
+    for chip in used_raw:
+        chip_gw = chip.get("event", 0)
+        internal = _API_CHIP_MAP.get(chip.get("name", ""))
+        if not internal:
+            continue
+
+        # Only count chips used in the same half as current
+        if in_second_half and chip_gw < CHIP_RENEWAL_GW:
+            continue  # First-half usage — chip has renewed
+        if not in_second_half and chip_gw >= CHIP_RENEWAL_GW:
+            continue  # Future half (shouldn't happen, but be safe)
+
+        available.discard(internal)
+
+    return sorted(available), used_raw
+
+
 def prompt_settings() -> dict:
     """Phase 0: Let user adjust auto-mode settings or press Enter to skip."""
     settings = {
@@ -471,8 +521,9 @@ def _display_chip_intel(ctx: dict) -> None:
     bgw_info = ctx["bgw_info"]
     recs = ctx["recommendations"]
 
-    # Header
-    header_parts = [f"GW{current_gw}", f"{remaining} GWs left"]
+    # Header — show the next GW we're planning for (not a finished GW)
+    next_gw = ctx.get("next_gw", current_gw)
+    header_parts = [f"GW{next_gw}", f"{remaining} GWs left"]
     if gap is not None:
         header_parts.append(f"{gap} pts behind")
     print(f"\n  {c_header('CHIP INTEL')} ({' · '.join(header_parts)})")
@@ -496,7 +547,8 @@ def _display_chip_intel(ctx: dict) -> None:
         bgw_parts = []
         for gw in sorted(bgw_info.keys())[:2]:
             teams = bgw_info[gw]
-            count = len(teams) if teams[0] != "TBC" else "?"
+            is_tbc = any(t.startswith("TBC") for t in teams)
+            count = len(teams) if not is_tbc else "?"
             bgw_parts.append(f"GW{gw} ({count} teams blank)")
         print(f"  BGW: {'; '.join(bgw_parts)}")
 
@@ -536,10 +588,7 @@ def _display_chip_intel(ctx: dict) -> None:
 
         gw_str = f"GW{rec.recommended_gw}" if rec.recommended_gw else "Hold"
 
-        # Truncate reason to fit
-        reason = rec.reason[:35]
-
-        print(f"  {label:<16} {bar_str} {score_str}  {gw_str:>7}  {reason}")
+        print(f"  {label:<16} {bar_str} {score_str}  {gw_str:>7}  {rec.reason}")
 
     # Highlight strong recommendation
     best = recs[0]
@@ -1318,9 +1367,13 @@ def prompt_free_hit_squad(
                         fixture_run = recommender.fixtures.get_fixture_run(
                             player.team_id
                         )
-                        next_fix = (
-                            fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
-                        )
+                        next_gw = fpl.get_next_gameweek()
+                        if not fpl.has_fixture_in_gw(player.team_id, next_gw):
+                            next_fix = f"BLANK (GW{next_gw})"
+                        elif fixture_run.fixtures:
+                            next_fix = fixture_run.fixtures[0][1]
+                        else:
+                            next_fix = "?"
                         print(
                             f"  {player.web_name} ({player.team}) {player.position} "
                             f"£{player.price}m | Form: {player.form} | "
@@ -1568,7 +1621,13 @@ def prompt_transfer_plan(
             if player:
                 sp = recommender.scorer.score_player(player)
                 fixture_run = recommender.fixtures.get_fixture_run(player.team_id)
-                next_fix = fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
+                next_gw = recommender.fpl.get_next_gameweek()
+                if not recommender.fpl.has_fixture_in_gw(player.team_id, next_gw):
+                    next_fix = f"BLANK (GW{next_gw})"
+                elif fixture_run.fixtures:
+                    next_fix = fixture_run.fixtures[0][1]
+                else:
+                    next_fix = "?"
                 print(
                     f"  {player.web_name} ({player.team}) {player.position} "
                     f"£{player.price}m | Form: {player.form} | "
@@ -1689,57 +1748,87 @@ def _best_lineup(
 ) -> tuple:
     """Pick the optimal starting 11 from a 15-man squad.
 
-    Returns (starting_11_ids, bench_4_ids) where bench is ordered by score
-    descending (best sub first).
+    Returns (starting_11_ids, bench_4_ids) where bench is ordered by lineup
+    score descending (best sub first).
+
+    Uses scorer.score_for_lineup() which weights GW-specific signals
+    (ep_next, form, fixture, minutes) instead of the transfer-oriented
+    overall_score (ownership-weighted).
     """
-    # Score all players
+    # Score all players for lineup purposes
     players = []
     for pid in squad_ids:
         p = fpl.get_player(pid)
         if p:
             sp = scorer.score_player(p)
-            players.append((pid, p, sp))
+            lineup_score = scorer.score_for_lineup(p)
+            players.append((pid, p, sp, lineup_score))
 
     by_pos = {}
-    for pid, p, sp in players:
-        by_pos.setdefault(p.position, []).append((pid, p, sp))
+    for pid, p, sp, ls in players:
+        by_pos.setdefault(p.position, []).append((pid, p, sp, ls))
 
-    # Sort each position by score descending
+    # Sort each position by LINEUP score descending
     for pos in by_pos:
-        by_pos[pos].sort(key=lambda x: x[2].overall_score, reverse=True)
+        by_pos[pos].sort(key=lambda x: x[3], reverse=True)
 
     gkps = by_pos.get("GKP", [])
     defs = by_pos.get("DEF", [])
     mids = by_pos.get("MID", [])
     fwds = by_pos.get("FWD", [])
 
+    bench_strength = getattr(config, "BENCH_STRENGTH", 0.0)
+    bench_sub_probs = getattr(config, "BENCH_SUB_PROBABILITIES", [0.25, 0.10, 0.05])
+
     best_score = -1
     best_starting = None
+    best_bench = None
 
     for n_def, n_mid, n_fwd in VALID_FORMATIONS:
         if n_def > len(defs) or n_mid > len(mids) or n_fwd > len(fwds) or len(gkps) < 1:
             continue
 
         starting = [gkps[0]] + defs[:n_def] + mids[:n_mid] + fwds[:n_fwd]
-        total = sum(sp.overall_score for _, _, sp in starting)
+        starting_score = sum(ls for _, _, _, ls in starting)
 
-        if total > best_score:
-            best_score = total
+        # Compute bench composition for this formation
+        starting_ids_f = set(pid for pid, _, _, _ in starting)
+        bench_f = [(pid, p, sp, ls) for pid, p, sp, ls in players if pid not in starting_ids_f]
+
+        # Separate outfield bench from GKP bench, sort outfield by lineup score desc
+        outfield_bench = sorted(
+            [(pid, p, sp, ls) for pid, p, sp, ls in bench_f if p.position != "GKP"],
+            key=lambda x: x[3], reverse=True,
+        )
+
+        # Weighted bench value using positional auto-sub probabilities
+        bench_value = 0.0
+        for i, prob in enumerate(bench_sub_probs):
+            if i < len(outfield_bench):
+                bench_value += prob * outfield_bench[i][3]
+
+        objective = starting_score + bench_strength * bench_value
+
+        if objective > best_score:
+            best_score = objective
             best_starting = starting
+            # Build ordered bench: GKP first (FPL requirement), then outfield by score desc
+            gkp_bench = [t for t in bench_f if t[1].position == "GKP"]
+            best_bench = gkp_bench + outfield_bench
 
     if not best_starting:
-        # Fallback: just pick top 11 by score
-        all_sorted = sorted(players, key=lambda x: x[2].overall_score, reverse=True)
+        # Fallback: just pick top 11 by lineup score
+        all_sorted = sorted(players, key=lambda x: x[3], reverse=True)
         best_starting = all_sorted[:11]
+        starting_ids = set(pid for pid, _, _, _ in best_starting)
+        best_bench = [(pid, p, sp, ls) for pid, p, sp, ls in players if pid not in starting_ids]
+        best_bench.sort(key=lambda x: (x[1].position != "GKP", -x[3]))
 
-    starting_ids = set(pid for pid, _, _ in best_starting)
-    bench = [(pid, p, sp) for pid, p, sp in players if pid not in starting_ids]
-    # Bench order: GKP first (position 12 required by FPL), then outfield by score desc
-    bench.sort(key=lambda x: (x[1].position != "GKP", -x[2].overall_score))
+    bench = best_bench if best_bench is not None else []
 
     return (
-        [pid for pid, _, _ in best_starting],
-        [pid for pid, _, _ in bench],
+        [pid for pid, _, _, _ in best_starting],
+        [pid for pid, _, _, _ in bench],
     )
 
 
@@ -1791,18 +1880,19 @@ def prompt_lineup(
                 p = fpl.get_player(pid)
                 if p and p.position == pos:
                     sp = scorer.score_player(p)
+                    ls = scorer.score_for_lineup(p)
                     cap = (
                         " (C)"
                         if pid == captain_id
                         else (" (V)" if pid == vc_id else "")
                     )
-                    pos_players.append((idx, p, sp, cap))
+                    pos_players.append((idx, p, sp, ls, cap))
                     idx += 1
             if pos_players:
                 print(f"  {c_debug(pos)}:")
-                for i, p, sp, cap in pos_players:
+                for i, p, sp, ls, cap in pos_players:
                     print(
-                        f"   {i:2}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_value(f'{sp.overall_score:.1f}')}{cap}"
+                        f"   {i:2}. {p.web_name:15} ({p.team:3}) £{p.price}m | GW: {c_value(f'{ls:.1f}')} | Own: {sp.overall_score:.1f}{cap}"
                     )
 
         # Formation
@@ -1819,8 +1909,9 @@ def prompt_lineup(
             p = fpl.get_player(pid)
             if p:
                 sp = scorer.score_player(p)
+                ls = scorer.score_for_lineup(p)
                 print(
-                    f"   {i}. {p.web_name:15} ({p.team:3}) £{p.price}m | Score: {c_debug(f'{sp.overall_score:.1f}')}"
+                    f"   {i}. {p.web_name:15} ({p.team:3}) £{p.price}m | GW: {c_debug(f'{ls:.1f}')} | Own: {sp.overall_score:.1f}"
                 )
 
     _display_lineup(starting, bench)
@@ -2182,60 +2273,64 @@ async def interactive_auto_mode(
     # Display model performance summary
     display_model_performance()
 
-    # Show mirror references and save squads for Free Hit option
+    # Show mirror references only when a full-rebuild chip (WC/FH) is available.
+    # Without WC or FH, mirror scanning adds latency with no actionable value.
     ian_squad = None
     ian_captain = None
 
     player_names = {p.id: p.web_name for p in fpl.get_all_players()}
 
-    # --- Ian Foster ---
-    print_phase("MIRROR REFERENCE: Ian Foster (Most Consistent)")
-    try:
-        mirror_analysis = await analyze_mirror(
-            your_squad=squad_ids,
-            current_gw=current_gw,
-            free_hit_threshold=4,
-        )
-        if mirror_analysis:
-            ian_squad = mirror_analysis.target_squad
-            ian_captain = mirror_analysis.target_captain
+    can_full_rebuild = "wildcard" in available_chips or "free_hit" in available_chips
 
-            captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
-
-            print(
-                f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}"
+    if can_full_rebuild:
+        # --- Ian Foster ---
+        print_phase("MIRROR REFERENCE: Ian Foster (Most Consistent)")
+        try:
+            mirror_analysis = await analyze_mirror(
+                your_squad=squad_ids,
+                current_gw=current_gw,
+                free_hit_threshold=4,
             )
-            print(f"  Transfers to match: {mirror_analysis.transfers_needed}")
+            if mirror_analysis:
+                ian_squad = mirror_analysis.target_squad
+                ian_captain = mirror_analysis.target_captain
 
-            if mirror_analysis.transfers_needed > 0:
-                print("\n  Quick diff:")
-                for pid in mirror_analysis.players_to_sell[:3]:
-                    name = player_names.get(pid, f"ID:{pid}")
-                    print(f"    OUT: {name}")
-                if mirror_analysis.transfers_needed > 3:
-                    print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
-                for pid in mirror_analysis.players_to_buy[:3]:
-                    name = player_names.get(pid, f"ID:{pid}")
-                    print(f"    IN:  {name}")
-                if mirror_analysis.transfers_needed > 3:
-                    print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
+                captain_name = player_names.get(mirror_analysis.target_captain, "Unknown")
 
-            if mirror_analysis.recommend_free_hit:
                 print(
-                    f"\n  ⚠️  Consider FREE HIT to mirror Ian ({mirror_analysis.transfers_needed} transfers)"
+                    f"\n  Ian's Rank: #{mirror_analysis.target_rank:,} | Points: {mirror_analysis.target_points}"
                 )
+                print(f"  Transfers to match: {mirror_analysis.transfers_needed}")
 
-            print(f"\n  Ian's captain: {captain_name}")
+                if mirror_analysis.transfers_needed > 0:
+                    print("\n  Quick diff:")
+                    for pid in mirror_analysis.players_to_sell[:3]:
+                        name = player_names.get(pid, f"ID:{pid}")
+                        print(f"    OUT: {name}")
+                    if mirror_analysis.transfers_needed > 3:
+                        print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
+                    for pid in mirror_analysis.players_to_buy[:3]:
+                        name = player_names.get(pid, f"ID:{pid}")
+                        print(f"    IN:  {name}")
+                    if mirror_analysis.transfers_needed > 3:
+                        print(f"    ... and {mirror_analysis.transfers_needed - 3} more")
 
-            moves = await get_ian_weekly_moves(current_gw)
-            if moves and moves["transfers_in"]:
-                print(
-                    f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}"
-                )
+                if mirror_analysis.recommend_free_hit:
+                    print(
+                        f"\n  ⚠️  Consider FREE HIT to mirror Ian ({mirror_analysis.transfers_needed} transfers)"
+                    )
 
-            print("\n  (Run --mirror for full analysis)")
-    except Exception as e:
-        print(f"  Could not fetch Ian's data: {e}")
+                print(f"\n  Ian's captain: {captain_name}")
+
+                moves = await get_ian_weekly_moves(current_gw)
+                if moves and moves["transfers_in"]:
+                    print(
+                        f"  Ian's transfer: {player_names.get(moves['transfers_out'][0], '?')} → {player_names.get(moves['transfers_in'][0], '?')}"
+                    )
+
+                print("\n  (Run --mirror for full analysis)")
+        except Exception as e:
+            print(f"  Could not fetch Ian's data: {e}")
 
     # Pre-phase: Login and fetch REAL current squad with selling prices
     # The public API shows the squad at the last GW deadline, but we need
@@ -2277,29 +2372,28 @@ async def interactive_auto_mode(
     except Exception as e:
         print(c_warn(f"⚠️  Auth error: {e}, using cached squad data"))
 
-    # Scan for budget-compatible top managers
-    # Use MARKET prices for the budget since squad costs are calculated with market prices.
-    # Selling prices are lower, so using them would filter out everyone.
+    # Scan for budget-compatible top managers — only when a full rebuild chip is available.
     budget_candidates = None
     player_prices = {p.id: p.price for p in fpl.get_all_players()}
-    scan_budget = sum(player_prices.get(pid, 0.0) for pid in squad_ids)
-    if squad_budget_info:
-        # Add bank to market-price squad value
-        scan_budget += squad_budget_info.get("bank", 0.0)
-    if scan_budget < 50.0:
-        scan_budget = 100.0
-    print(c_debug(f"\n  Scan budget: £{scan_budget:.1f}m (market prices + bank)"))
-    try:
-        budget_candidates = await find_budget_mirror_targets(
-            current_gw=current_gw,
-            budget=scan_budget,
-            user_squad=squad_ids,
-            player_prices=player_prices,
-            num_managers=500,
-            max_candidates=6,
-        )
-    except Exception as e:
-        print(c_warn(f"  ⚠️  Budget mirror scan failed: {e}"))
+
+    if can_full_rebuild:
+        scan_budget = sum(player_prices.get(pid, 0.0) for pid in squad_ids)
+        if squad_budget_info:
+            scan_budget += squad_budget_info.get("bank", 0.0)
+        if scan_budget < 50.0:
+            scan_budget = 100.0
+        print(c_debug(f"\n  Scan budget: £{scan_budget:.1f}m (market prices + bank)"))
+        try:
+            budget_candidates = await find_budget_mirror_targets(
+                current_gw=current_gw,
+                budget=scan_budget,
+                user_squad=squad_ids,
+                player_prices=player_prices,
+                num_managers=500,
+                max_candidates=6,
+            )
+        except Exception as e:
+            print(c_warn(f"  ⚠️  Budget mirror scan failed: {e}"))
 
     try:
         # Phase 0: Settings
@@ -2542,7 +2636,19 @@ async def main_async(args):
 
     # Initialize analyzers
     fixtures = FixtureAnalyzer(fpl)
-    scorer = PlayerScorer(fpl, fixtures, news)
+
+    # Fetch Understat xG/xA data if enabled
+    understat_data = {}
+    if getattr(config, "UNDERSTAT_ENABLED", False):
+        try:
+            understat = UnderstatScraper()
+            understat_data = await understat.get_mapped_stats(fpl.get_all_players())
+            if understat_data:
+                print(c_success(f"✓ Understat xG/xA loaded ({len(understat_data)} players)"))
+        except Exception:
+            pass  # Graceful degradation
+
+    scorer = PlayerScorer(fpl, fixtures, news, understat_data=understat_data)
     differential_finder = DifferentialFinder(fpl, scorer, fixtures)
     chip_optimizer = ChipOptimizer(fpl, fixtures)
 
@@ -2568,8 +2674,25 @@ async def main_async(args):
         else:
             print("⚠️  Could not fetch team - using general recommendations")
 
-    # Get available chips
-    available_chips = get_available_chips(args.chips)
+    # Get available chips — auto-detect from API when using default (--chips all)
+    if args.chips == ["all"] and args.team_id:
+        available_chips, used_chips_raw = await get_available_chips_from_api(
+            fpl, args.team_id
+        )
+        if available_chips:
+            chip_names = ", ".join(c.replace("_", " ").title() for c in available_chips)
+            print(c_success(f"✓ Chips available: {chip_names}"))
+        else:
+            print(c_success("✓ All chips used — chip advisory skipped"))
+        if config.DEBUG and used_chips_raw:
+            for uc in used_chips_raw:
+                print(
+                    c_debug(
+                        f"   [debug] chip used: {uc.get('name')} in GW{uc.get('event')}"
+                    )
+                )
+    else:
+        available_chips = get_available_chips(args.chips)
 
     # Run league spy for auto/default modes when team_id is available
     league_intel = None
@@ -2874,11 +2997,15 @@ async def main_async(args):
                             "suspended": "🚫",
                         }.get(sp.availability, "")
 
-                        # Fixture info
+                        # Fixture info — show BLANK if team has no fixture this GW
+                        next_gw = fpl.get_next_gameweek()
                         fixture_run = fixtures.get_fixture_run(player.team_id)
-                        next_fix = (
-                            fixture_run.fixtures[0][1] if fixture_run.fixtures else "?"
-                        )
+                        if not fpl.has_fixture_in_gw(player.team_id, next_gw):
+                            next_fix = f"BLANK (GW{next_gw})"
+                        elif fixture_run.fixtures:
+                            next_fix = fixture_run.fixtures[0][1]
+                        else:
+                            next_fix = "?"
 
                         print(
                             f"   {avail_icon} {player.web_name:15} ({player.team}) £{player.price}m | "

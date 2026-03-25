@@ -368,7 +368,24 @@ class FPLActions:
             )
             return False
 
-        ordered = list(starting) + list(bench)
+        # FPL API requires picks sorted by element_type (position) within
+        # starters and bench separately: GKP(1) → DEF(2) → MID(3) → FWD(4).
+        # Fetch element_type map from bootstrap if we don't have it cached.
+        if not hasattr(self, "_element_types") or not self._element_types:
+            async with self._session.get(
+                f"https://{FPL_DOMAIN}/api/bootstrap-static/"
+            ) as resp:
+                bootstrap = await resp.json()
+                self._element_types = {
+                    e["id"]: e["element_type"] for e in bootstrap["elements"]
+                }
+
+        def _sort_by_position(player_ids: list) -> list:
+            return sorted(player_ids, key=lambda pid: self._element_types.get(pid, 9))
+
+        sorted_starting = _sort_by_position(starting)
+        sorted_bench = _sort_by_position(bench)
+        ordered = sorted_starting + sorted_bench
 
         picks = []
         for i, pid in enumerate(ordered):

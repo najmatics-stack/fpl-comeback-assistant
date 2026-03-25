@@ -192,6 +192,27 @@ class FPLDataFetcher:
                 return []
             return await resp.json()
 
+    async def fetch_chip_history(self, team_id: int) -> List[Dict[str, Any]]:
+        """Fetch chips already used by a manager.
+
+        Returns list of dicts like [{"name": "wildcard", "time": "...", "event": 12}, ...]
+        API chip names: wildcard, freehit, 3xc, bboost
+        """
+        cache_key = f"chip_history_{team_id}"
+        cached = self.cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        session = await self._get_session()
+        url = f"{self.BASE_URL}/entry/{team_id}/history/"
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return []
+            data = await resp.json()
+            chips = data.get("chips", [])
+            self.cache.set(cache_key, chips)
+            return chips
+
     async def fetch_current_squad(self, team_id: int) -> Optional[List[dict]]:
         """Fetch the ACTUAL current squad, accounting for pending transfers.
 
@@ -414,6 +435,28 @@ class FPLDataFetcher:
 
         return 1
 
+    def get_next_gameweek(self) -> int:
+        """Get the next gameweek number (the one we're planning for)."""
+        if not self._bootstrap_data:
+            return 1
+
+        for event in self._bootstrap_data["events"]:
+            if event["is_next"]:
+                return event["id"]
+
+        # If no explicit next, current + 1
+        return self.get_current_gameweek() + 1
+
+    def has_fixture_in_gw(self, team_id: int, gameweek: int) -> bool:
+        """Check if a team has a fixture in a specific gameweek."""
+        if not self._fixtures_data:
+            return True  # Assume yes if no data
+        return any(
+            f.get("event") == gameweek
+            and (f["team_h"] == team_id or f["team_a"] == team_id)
+            for f in self._fixtures_data
+        )
+
     def get_all_players(self) -> List[Player]:
         """Get all players"""
         return list(self._players.values())
@@ -534,6 +577,25 @@ class FPLDataFetcher:
                 bgw_teams[gw] = blank_teams
 
         return bgw_teams
+
+    def get_unscheduled_fixture_count(self) -> int:
+        """Count fixtures not yet assigned to a gameweek (event=None).
+        These are typically postponed matches that will become DGWs later.
+        """
+        if not self._fixtures_data:
+            return 0
+        return sum(1 for f in self._fixtures_data if f.get("event") is None)
+
+    def get_fixture_counts_by_gw(self) -> Dict[int, int]:
+        """Count confirmed fixtures per gameweek."""
+        if not self._fixtures_data:
+            return {}
+        counts: Dict[int, int] = {}
+        for f in self._fixtures_data:
+            gw = f.get("event")
+            if gw is not None:
+                counts[gw] = counts.get(gw, 0) + 1
+        return counts
 
     def to_dataframe(self) -> pd.DataFrame:
         """Convert player data to pandas DataFrame"""

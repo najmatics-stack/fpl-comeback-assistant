@@ -36,6 +36,7 @@ class CaptainPick:
     expected_points: float
     reason: str
     fixture_info: str
+    mode: str = ""  # Differential captaincy mode used: aggressive/balanced/safe/off
 
 
 @dataclass
@@ -474,6 +475,32 @@ class RecommendationEngine:
         recommendations.sort(key=lambda x: x.score_gain, reverse=True)
         return recommendations[:limit]
 
+    def _resolve_captain_mode(self) -> str:
+        """Determine the effective captain differential mode based on config and league gap.
+
+        Returns one of: "aggressive", "balanced", "safe", "off"
+        """
+        mode_setting = getattr(config, "CAPTAIN_DIFFERENTIAL_MODE", "auto")
+
+        if mode_setting == "off":
+            return "off"
+
+        if mode_setting in ("aggressive", "balanced", "safe"):
+            return mode_setting
+
+        # Auto mode: adapt based on points gap to leader
+        if mode_setting == "auto" and self.league_intel:
+            gap = self.league_intel.points_to_leader
+            if gap > 100:
+                return "aggressive"
+            elif gap >= 50:
+                return "balanced"
+            else:
+                return "safe"
+
+        # No league intel available — fall back to safe
+        return "safe"
+
     def get_captain_picks(
         self, squad_ids: Optional[List[int]] = None, limit: int = 3
     ) -> List[CaptainPick]:
@@ -488,6 +515,26 @@ class RecommendationEngine:
         current_gw = self.fpl.get_current_gameweek()
         captain_picks = []
         use_xgi = getattr(config, "CAPTAIN_USE_XGI", False)
+
+        # Resolve differential captaincy mode
+        captain_mode = self._resolve_captain_mode()
+        mode_multipliers = getattr(config, "CAPTAIN_MODE_MULTIPLIERS", {}).get(
+            captain_mode, {}
+        )
+
+        # Log active mode
+        if self.league_intel and captain_mode != "off":
+            gap = self.league_intel.points_to_leader
+            mode_setting = getattr(config, "CAPTAIN_DIFFERENTIAL_MODE", "auto")
+            if mode_setting == "auto":
+                print(
+                    f"   Captain mode: {captain_mode.upper()} "
+                    f"(auto — {gap} pts behind leader)"
+                )
+            else:
+                print(f"   Captain mode: {captain_mode.upper()} (manual override)")
+        elif captain_mode == "off":
+            print("   Captain mode: OFF (no league adjustments)")
 
         # Pre-compute league intel lookups once (not per-player)
         safe_diff_ids: Set[int] = set()
@@ -562,26 +609,36 @@ class RecommendationEngine:
             if sp.availability == "doubt":
                 expected_pts *= sp.availability_multiplier
 
-            # League spy adjustments (using pre-computed lookups)
-            if self.league_intel:
+            # League spy adjustments using mode-dependent multipliers
+            if self.league_intel and captain_mode != "off" and mode_multipliers:
                 if player.id in self.league_intel.captain_fades:
-                    expected_pts *= 0.85
+                    expected_pts *= mode_multipliers.get("fade", 0.85)
                 elif player.id in self.league_intel.captain_targets:
-                    expected_pts *= 1.15
+                    expected_pts *= mode_multipliers.get("target", 1.15)
 
                 # Global vs league captain boost
                 if player.id in safe_diff_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count <= 1:
-                        expected_pts *= 1.30  # World-backed, league-ignored
+                        expected_pts *= mode_multipliers.get("safe_diff", 1.30)
                     else:
-                        expected_pts *= 1.15  # World-backed even if some rivals captain
+                        expected_pts *= mode_multipliers.get("target", 1.15)
 
                 # Trending hidden as captain = bold but world-validated move
                 if player.id in trending_ids:
                     captain_count = self.league_intel.league_captains.get(player.id, 0)
                     if captain_count == 0:
-                        expected_pts *= 1.25  # Nobody captaining, world moving here
+                        expected_pts *= mode_multipliers.get("trending", 1.25)
+
+                # Ceiling bonus in aggressive mode: explosive players rivals don't captain
+                ceiling_mult = mode_multipliers.get("ceiling", 1.0)
+                if (
+                    ceiling_mult > 1.0
+                    and current_gw > 0
+                    and player.dreamteam_count >= 3
+                    and player.id not in self.league_intel.captain_fades
+                ):
+                    expected_pts *= ceiling_mult
 
             # Generate fixture info
             fixtures_str = " + ".join(
@@ -605,7 +662,7 @@ class RecommendationEngine:
             if fixture_run.has_double:
                 reasons.append("DOUBLE GW")
 
-            if self.league_intel:
+            if self.league_intel and captain_mode != "off":
                 cap_count = self.league_intel.league_captains.get(player.id, 0)
                 if player.id in self.league_intel.captain_fades:
                     reasons.append(f"fade: {cap_count}/{num_rivals} rivals captaining")
@@ -635,6 +692,7 @@ class RecommendationEngine:
                     expected_points=expected_pts,
                     reason=", ".join(reasons) or "solid option",
                     fixture_info=fixtures_str,
+                    mode=captain_mode,
                 )
             )
 
@@ -1100,7 +1158,11 @@ class RecommendationEngine:
         lines.append("")
 
         # Captain Picks
-        lines.append("👑 CAPTAIN PICKS")
+        captain_mode = rec.captain_picks[0].mode if rec.captain_picks else ""
+        mode_label = ""
+        if captain_mode and captain_mode != "off":
+            mode_label = f" [{captain_mode.upper()} MODE]"
+        lines.append(f"👑 CAPTAIN PICKS{mode_label}")
         lines.append("-" * 40)
         for i, cp in enumerate(rec.captain_picks, 1):
             p = cp.player.player
@@ -1132,13 +1194,22 @@ class RecommendationEngine:
         # Chip Strategy (condensed)
         lines.append("🃏 CHIP STRATEGY")
         lines.append("-" * 40)
-        for chip_rec in rec.chip_strategy.recommendations:
-            priority_icon = {1: "🔥", 2: "📅", 3: "💤"}.get(chip_rec.priority, "?")
-            gw_str = (
-                f"GW{chip_rec.recommended_gw}" if chip_rec.recommended_gw else "Hold"
-            )
-            lines.append(f"   {priority_icon} {chip_rec.chip.value.upper()}: {gw_str}")
-            lines.append(f"      {chip_rec.reason}")
+        if not rec.chip_strategy.recommendations:
+            lines.append("   All chips used — no recommendations.")
+        else:
+            for chip_rec in rec.chip_strategy.recommendations:
+                priority_icon = {1: "🔥", 2: "📅", 3: "💤"}.get(
+                    chip_rec.priority, "?"
+                )
+                gw_str = (
+                    f"GW{chip_rec.recommended_gw}"
+                    if chip_rec.recommended_gw
+                    else "Hold"
+                )
+                lines.append(
+                    f"   {priority_icon} {chip_rec.chip.value.upper()}: {gw_str}"
+                )
+                lines.append(f"      {chip_rec.reason}")
         lines.append("")
 
         # Fixture Summary
