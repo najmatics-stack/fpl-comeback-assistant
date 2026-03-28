@@ -2,6 +2,11 @@
 
 A Python tool to help you climb the Fantasy Premier League rankings with data-driven recommendations.
 
+## Requirements
+
+- **Python 3.12+**
+- pip (Python package manager)
+
 ## Features
 
 - **Transfer Recommendations**: Identifies optimal player swaps based on form, fixtures, and value
@@ -10,6 +15,8 @@ A Python tool to help you climb the Fantasy Premier League rankings with data-dr
 - **Chip Strategy Optimizer**: Recommends when to use Wildcard, Free Hit, Triple Captain, and Bench Boost
 - **Injury Tracking**: Flags unavailable players from your squad
 - **Fixture Analysis**: Rates upcoming fixtures for all teams
+- **Discord Bot**: Get recommendations and deadline reminders via Discord
+- **Deadline Checker**: Automated GH Actions workflow to notify before FPL deadlines
 
 ## Installation
 
@@ -123,6 +130,9 @@ Edit `config.py` to customize:
 fpl-comeback-assistant/
 ├── main.py                 # Entry point
 ├── config.py               # Settings
+├── discord_bot.py          # Discord bot integration
+├── check_deadline.py       # FPL deadline notifications
+├── weights_history.json    # Historical scoring weights
 ├── data/
 │   ├── fpl_api.py          # FPL API integration
 │   ├── news_scraper.py     # Injury/news scraping
@@ -134,6 +144,10 @@ fpl-comeback-assistant/
 │   └── chip_optimizer.py   # Chip timing
 ├── output/
 │   └── recommendations.py  # Formatting
+├── logs/                   # Application logs
+├── .github/
+│   └── workflows/
+│       └── deadline_check.yml  # Scheduled deadline notifier
 └── requirements.txt
 ```
 
@@ -152,4 +166,4 @@ fpl-comeback-assistant/
 
 ## License
 
-MIT License
+MIT License - see [LICENSE](LICENSE) for details.
